@@ -74,7 +74,7 @@ hatching (from 2) remain good candidates for later.
 
 ## Genetics
 
-- **Genome = 52 named genes + a list of sprouts.** Each fixed gene is a pair of
+- **Genome = 56 named genes + a list of sprouts.** Each fixed gene is a pair of
   alleles (diploid), with each allele a float in `[0, 1]`. Definitions live in
   `src/genetics/genes.ts`. Sprouts are described below.
 - **Expression modes** decide how the two alleles combine:
@@ -158,6 +158,16 @@ Spore's creature creator is the inspiration, and three of its ideas carry over:
    and become rings on tails), a pale belly and darker "points" on hands and feet.
    Paint follows the body: each skin vertex knows which part it is on, how far
    along it, and whether it faces up or down, and colours cross-fade where parts meet.
+   Spore paints into an automatic UV map; with no UVs at all, each vertex here stores
+   the colour without the pattern, what the pattern adds, and a signed "mark" field
+   that the shader thresholds per pixel, so markings have crisp edges. A fourth,
+   fine layer (velvet, scales or pebbles) is a height field evaluated in the shader
+   in the skin's rest pose, used as a bump map. Creases darken by ambient occlusion
+   read off the same distance field that built the skin.
+4. **A spine of metaballs.** In Spore you grow or shrink each vertebra. Here the
+   torso radius along the spine is a profile: taper, lumps and a waist pinch reshape
+   it, a belly blob can hang under it, and the head is several blobs (cranium, cheeks,
+   brows) with a snout built as a chain of tapered segments along a curve.
 
 ### Body plans
 
@@ -174,6 +184,20 @@ Four legs walking was the most common creature, so body plans now branch more:
 - **Float:** tentacled creatures may hover and drift like jellyfish.
 - Leg pair cut points were rebalanced, so bipeds and six-legged creatures are
   more common and quadrupeds are just under half.
+
+Even so, herds read as horses and dogs: horizontal sausage bodies on thin legs with
+a neck in front. So silhouettes now vary more (Milestone 5):
+
+- **Rounder bodies, sturdier legs:** the everyday body is a bean rather than a
+  sausage, and leg thickness is sized against the body it carries.
+- **Waist:** pinches the torso into two lobes. With a heavy rear the legs gather on
+  the front lobe, like an insect's thorax, and get slender (Hive visitors).
+- **Belly:** a round belly under the middle: hippos, bears, penguins.
+- **Sunk heads:** the bottom of the neck gene melts the head into the front of the
+  body, face showing, like a frog or a pufferfish (Bog visitors).
+- **Centaurs:** the top of the posture gene rears up the chest of a body on two or
+  more leg pairs; the legs gather under the back half and the arms stay free.
+- **Muzzle:** pointed snouts taper and hook down; blunt ones swell into a pig nose.
 
 ## Abilities (form follows function)
 
@@ -223,15 +247,20 @@ creatures do zoomies, and strong fliers loop the loop.
 
 ## Art direction
 
-- The world: soft toon shading (three-step grey ramp), low-poly flat-shaded terrain.
+- The world: soft toon shading (three-step grey ramp) on trees and props; smooth
+  terrain coloured at two scales with a worn path; grass tufts tinted by the ground
+  that sway in waves of wind; slow cloud shadows; a pond with clear shallows, a foam
+  line and glinting ripples; soft-edged shadows.
 - Creatures: smooth blobby skin with their own soft ramp (violet-tinted shadows,
   warm lights), a rim light so they stand out from the grass, a little gloss like a
   vinyl toy, and a thin ink outline in a darker shade of the skin.
 - Colour: the hue gene is free, but saturation and lightness stay in a pleasant
   band, yellows are lifted, pattern colours always have clear value contrast with
   the body, and grass greens are half as common as other hues so creatures do not
-  vanish into the meadow. Eyes have a coloured iris that contrasts with the body,
-  a lid in the coat colour (heavier on sleepy creatures) and a smile.
+  vanish into the meadow. Eyes have a coloured iris (darker at the rim) that contrasts
+  with the body, two catchlights, a lid in the skin colour (heavier on sleepy
+  creatures) and a smile. All eyes look at one point ahead of the face, so the gaze
+  is friendly rather than wall-eyed.
 - Everything is procedural: no image or model assets. Anything that must be
   authored (palettes, name syllables, visitor themes) lives in code next to the
   system that uses it.

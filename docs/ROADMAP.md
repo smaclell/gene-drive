@@ -98,6 +98,27 @@ Everything is procedural WebAudio: no samples, no new dependencies, quiet by def
 - [x] Settings: 🔊 and M stay the master mute; Help has Ambience, Music, Creatures and Chimes sliders, saved
       with the other settings (old settings still load)
 
+## ✅ Milestone 5: stranger shapes, richer skin, a softer meadow (done)
+
+**Silhouettes beyond horses and dogs**
+- [x] Rounder everyday bodies, shorter legs and necks on average, legs sized against the body they carry
+- [x] Waist gene: two-lobed bodies; heavy rears carry slender legs on the front lobe like an insect thorax
+- [x] Belly gene: a round belly blob under the middle
+- [x] Sunk heads at the bottom of the neck gene: the face sits on the front of the body
+- [x] Centaurs at the top of the posture gene (two or more leg pairs): the chest rears up, legs gather behind
+- [x] Heads as segments: cheeks and brow bumps; snouts are a chain of tapered segments along a curve
+- [x] Muzzle gene: pointed snouts hook down, blunt ones swell into an upturned pig nose
+- [x] Journal: Centaur, Wasp waist, Pot belly, All one piece, Velvet, Scales, Pebbly; Hive and Bog visitors
+
+**Graphics**
+- [x] Crisp pattern edges: a per-vertex signed field thresholded per pixel
+- [x] Ambient occlusion baked from the skin's distance field; skin near the ground is a little darker
+- [x] Skin texture gene drawn as shader bumps: velvet, scales, pebbles (fade before they would shimmer)
+- [x] Friendlier eyes: converging gaze, iris rims, bigger pupils, two catchlights, brighter whites, skin-coloured lids
+- [x] Smooth terrain coloured at two scales, a worn path from the cottage to the gate, swaying grass tufts
+- [x] Cloud shadows drift over the meadow by day; the pond has depth colour, a foam line and glinting ripples
+- [x] Soft-edged shadows
+
 ## 🎯 Next (pending a choice)
 
 1. **Sprouts that do things:** sprouts that grab fruit, eye-sprouts that spot visitors early, leaf sprouts that photosynthesise.
@@ -122,7 +143,13 @@ Everything is procedural WebAudio: no samples, no new dependencies, quiet by def
 
 - Building a creature's skin takes about 80 ms, so a full herd of 30 adds a couple of seconds to loading
   and the Lab redraws a little slowly while dragging.
-- Patterns are painted per vertex, so very small spots or thin stripes are soft rather than crisp.
+- Pattern edges are crisp, but each edge is straight within a triangle, so very small spots look a little polygonal up close.
+- Skin texture (scales, pebbles, velvet) is only on the skin mesh; rigblocks such as ears and fins stay smooth.
+- A sunk head only turns a little, so it does not twist the chest; four leg pairs on a small thorax can crowd.
+- A long, hooked snout can dip toward the grass when a low head looks down.
+- Grass does not part around creatures, and cloud shadows fall on the ground but not on creatures.
+- Milestone 5 changed proportion mappings (body, legs, neck), so saved creatures look different (genomes are
+  unchanged); old saves get random founder alleles for the new waist, belly, texture and muzzle genes.
 - Arms can pass through the body or each other in some poses (no collision).
 - The ink outline and rim light only cover the skin, not rigblocks such as horns and ears.
 - Changing leg pair cut points and palettes changed how some existing saved creatures look (genomes are unchanged).

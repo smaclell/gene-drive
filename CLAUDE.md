@@ -33,7 +33,7 @@ on pull requests.
 ## Data flow
 
 ```
-Genome ─ 52 fixed genes (allele pairs) + sprouts (variable-length list)
+Genome ─ 56 fixed genes (allele pairs) + sprouts (variable-length list)
   │ express()                       genetics/genome.ts
   ▼
 BodyPlan ─ shape units, discrete styles, gait, voice, quirk   genetics/phenotype.ts
@@ -75,10 +75,12 @@ src/
   creature/
     build.ts        skeleton → bones, skin blobs and rigid parts. Paint layers, helpers, one builder
                     per part, then buildCreature() (meshes the skin, binds it, wires spine bending)
-    skin.ts         metaball skin: SDF blobs, smooth union, surface nets, bone weights, paint coords
+    skin.ts         metaball skin: SDF blobs, smooth union, surface nets, bone weights, paint coords, baked AO
     motion.ts       gaits (incl. roll, float), leg-style adapters, arms, tail chains, quirks, wings, blinking
-    materials.ts    shared creature materials: tinted soft ramp, rim light, gloss, glow, sheen, ink outline
-  world/       layout.ts (terrain height, landmarks), scenery.ts (meshes, fruit, flowers, burrows, tree shake), sky.ts
+    materials.ts    shared creature materials: tinted soft ramp, rim light, gloss, glow, sheen, ink outline,
+                    crisp pattern edges (per-pixel `mark`), skin textures as shader bumps (`skinMaterial`)
+  world/       layout.ts (terrain height, landmarks), surface.ts (terrain colour, swaying grass, pond shader,
+               cloud shadows), scenery.ts (trees, fruit, flowers, burrows, cottage, fence), sky.ts
   sim/
     creature.ts     one creature: task machine (forage, dig, swim, fly, nap, quirk, zoom…), signature moves
     ranch.ts        herd, eggs, breeding, visitors, settings, saves; the UI talks to this
@@ -140,8 +142,9 @@ src/
 - **Everything is procedural.** No image, model or sound assets. Authored data
   (palettes, syllables, themes, phrases) lives in code beside the system that uses it.
 - **Keep `core/` and `genetics/` free of three.js** so they stay fast to test in Node.
-- Colour, glow and sheen live in vertex attributes (`color`, `glow`, `sheen`); every creature
-  geometry must have all three, because creatures share a few materials.
+- Colour, glow and sheen live in vertex attributes (`color`, `glow`, `sheen`, plus the pattern's
+  `paintDelta` and `mark`); every creature geometry gets them from `setSkinAttributes` in `build.ts`,
+  because creatures share a few materials. Only the skin mesh has `grain` (its texture frequency).
 - Skin build time is the main cost of making a creature (≈80 ms): grid spacing is chosen in
   `buildCreature` from the creature's size. Blobs thinner than a cell are thickened, not dropped.
 - Arms never touch the ground (anatomy shortens or raises them), so they can swing, reach and wave freely.
@@ -164,7 +167,9 @@ src/
   `gene-drive-settings-v1`; "Start a new ranch" in Help resets the save only.
 - **Gallery** (`/gallery.html`): `?seed=&count=&theme=` picks creatures; `set=horns:0.95,legPairs:0.05`
   (handy: `set=arms:0.95,legPairs:0.25,posture:0.9` upright four-armed bipeds;
-  `set=girth:0.9,bodyLength:0.15,gait:0.99` rollers; `set=legPairs:0.02,legStyle:0.95,gait:0.99` floaters)
+  `set=girth:0.9,bodyLength:0.15,gait:0.99` rollers; `set=legPairs:0.02,legStyle:0.95,gait:0.99` floaters;
+  `set=posture:0.97,legPairs:0.55,arms:0.8` centaurs; `set=waist:0.97,taper:0.1,legPairs:0.8` insects;
+  `set=neckLength:0.02` sunk heads; `set=belly:1` pot bellies; `set=texture:0.7` scales; `theme=hive`, `theme=bog`)
   forces genes on all of them; `sprouts=3` adds random sprouts; `walk=1` (or W) walks them in place
   to check gaits. R rerolls.
 - Headless screenshots work with the preinstalled Playwright Chromium using
