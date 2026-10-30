@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { clamp01, lerp, mulberry32, smoothstep } from '../core/rng';
 import { glowUniform } from '../creature/materials';
+import { daylightUniform } from './surface';
 
 /**
  * Day/night cycle. One day lasts `DAY_SECONDS`; daylight takes most of it so
@@ -76,6 +77,7 @@ export function createSky(scene: THREE.Scene, sun: THREE.DirectionalLight, hemi:
     hemi.color.copy(background).lerp(new THREE.Color(0xffffff), 0.5);
     starMat.opacity = clamp01(1 - day * 1.6);
     glowUniform.value = smoothstep(0.25, -0.15, height);
+    daylightUniform.value = smoothstep(0.05, 0.35, height);
   };
 
   return {

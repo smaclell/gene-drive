@@ -1,15 +1,14 @@
 import * as THREE from 'three';
-import { fbm2, noise2 } from '../core/noise';
-import { mulberry32, randRange, smoothstep, type Rng } from '../core/rng';
+import { mulberry32, randRange, type Rng } from '../core/rng';
 import { toonGradient } from '../creature/materials';
 import {
-  COTTAGE, FENCE_RADIUS, GATE_ANGLE, POND, RANCH_RADIUS, SOIL, WATER_LEVEL, WORLD_SIZE,
-  inSoil, pondDistance, randomLandPoint, terrainHeight, type Point,
+  COTTAGE, FENCE_RADIUS, GATE_ANGLE, POND, RANCH_RADIUS, WORLD_SIZE, inSoil, randomLandPoint, terrainHeight, type Point,
 } from './layout';
+import { buildGrass, buildTerrain, buildWater, windUniform } from './surface';
 
 /**
- * The procedural meadow: terrain, pond, soil, trees with fruit, flowers,
- * cottage and fence. Fruit and flowers are the "work sites" creatures use.
+ * The procedural meadow: trees with fruit, flowers, cottage, fence and rocks, on the
+ * ground from `surface.ts`. Fruit and flowers are the "work sites" creatures use.
  */
 
 export type TreeKind = 'bush' | 'apple' | 'tall';
@@ -74,53 +73,6 @@ function lambert(color: THREE.ColorRepresentation, flat = true) {
 
 function toon(color: THREE.ColorRepresentation) {
   return new THREE.MeshToonMaterial({ color, gradientMap: toonGradient() });
-}
-
-function buildTerrain(): THREE.Mesh {
-  const segments = 170;
-  const geo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, segments, segments);
-  geo.rotateX(-Math.PI / 2);
-  const pos = geo.getAttribute('position');
-  const colors = new Float32Array(pos.count * 3);
-  const grassA = new THREE.Color(0x8cc56a);
-  const grassB = new THREE.Color(0x6fae5a);
-  const meadow = new THREE.Color(0xb7d77a);
-  const sand = new THREE.Color(0xe8d7a6);
-  const wetSand = new THREE.Color(0xb59f74);
-  const soil = new THREE.Color(0x8a5a3c);
-  const soilDark = new THREE.Color(0x6b432c);
-  const hill = new THREE.Color(0x7fa65a);
-  const c = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    const h = terrainHeight(x, z);
-    pos.setY(i, h);
-    c.copy(grassA).lerp(grassB, fbm2(x * 0.08, z * 0.08, 3, 3));
-    c.lerp(meadow, smoothstep(0.62, 0.78, noise2(x * 0.05 + 9, z * 0.05, 4)) * 0.7);
-    c.lerp(hill, smoothstep(2, 8, h));
-    const shore = pondDistance(x, z);
-    if (shore < 1.45) c.lerp(sand, smoothstep(1.45, 1.2, shore));
-    if (shore < 1.4 && h < WATER_LEVEL - 0.1) c.copy(wetSand);
-    if (inSoil(x, z)) c.copy(Math.sin((z - SOIL.z) * 3.6) > 0 ? soil : soilDark);
-    colors.set([c.r, c.g, c.b], i * 3);
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
-  mesh.receiveShadow = true;
-  mesh.name = 'terrain';
-  return mesh;
-}
-
-function buildWater(): THREE.Mesh {
-  const geo = new THREE.CircleGeometry(POND.r * 1.35, 48);
-  geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshPhongMaterial({ color: 0x5cb8d6, transparent: true, opacity: 0.78, shininess: 90, specular: 0xffffff });
-  const water = new THREE.Mesh(geo, mat);
-  water.position.set(POND.x, WATER_LEVEL, POND.z);
-  water.receiveShadow = true;
-  return water;
 }
 
 const FRUIT_STYLE: Record<TreeKind, { color: number; size: number }> = {
@@ -219,32 +171,6 @@ function buildFlowers(rng: Rng, spots: Point[]): { meshes: THREE.Object3D[]; pat
   heads.instanceMatrix.needsUpdate = true;
   if (heads.instanceColor) heads.instanceColor.needsUpdate = true;
   return { meshes: [stems, heads], patches, heads };
-}
-
-function buildGrass(rng: Rng): THREE.InstancedMesh {
-  const count = 1600;
-  const geo = new THREE.ConeGeometry(0.07, 0.42, 3);
-  geo.translate(0, 0.2, 0);
-  const grass = new THREE.InstancedMesh(geo, lambert(0x6aa84f), count);
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  let placed = 0;
-  for (let tries = 0; placed < count && tries < count * 4; tries++) {
-    const a = rng() * Math.PI * 2;
-    const r = Math.sqrt(rng()) * (FENCE_RADIUS + 12);
-    const x = Math.cos(a) * r;
-    const z = Math.sin(a) * r;
-    const h = terrainHeight(x, z);
-    if (pondDistance(x, z) < 1.3 || inSoil(x, z)) continue;
-    q.setFromEuler(new THREE.Euler(randRange(rng, -0.25, 0.25), rng() * 6, randRange(rng, -0.25, 0.25)));
-    const s = randRange(rng, 0.6, 1.4);
-    m.compose(new THREE.Vector3(x, h, z), q, new THREE.Vector3(s, s, s));
-    grass.setMatrixAt(placed, m);
-    grass.setColorAt(placed, new THREE.Color().setHSL(randRange(rng, 0.24, 0.3), 0.45, randRange(rng, 0.38, 0.52)));
-    placed++;
-  }
-  grass.count = placed;
-  return grass;
 }
 
 function buildFence(): THREE.Group {
@@ -445,7 +371,7 @@ export function buildWorld(seed = 1): World {
       }
       flowers.heads.instanceMatrix.needsUpdate = true;
     }
-    (water.material as THREE.MeshPhongMaterial).opacity = 0.75 + Math.sin(time * 0.8) * 0.03;
+    windUniform.value = time;
     windowMat.emissiveIntensity = 1;
   };
 

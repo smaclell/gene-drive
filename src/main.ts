@@ -38,6 +38,9 @@ sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -42, right: 42, top: 42, bottom: -42, near: 1, far: 220 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.03;
+// Soft-edged shadows, so creatures and trees sit gently on the grass.
+sun.shadow.radius = 3;
+sun.shadow.blurSamples = 12;
 scene.add(sun, sun.target);
 
 const world = buildWorld(1);
