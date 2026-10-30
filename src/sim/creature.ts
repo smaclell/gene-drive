@@ -12,6 +12,7 @@ import {
 } from '../world/layout';
 import { pickFruit, type Burrow, type FlowerPatch, type Tree } from '../world/scenery';
 import type { Effects } from './effects';
+import type { CreatureSound } from './sfx';
 import type { Mood } from './voice';
 
 /**
@@ -54,6 +55,7 @@ export interface CreatureContext {
   produce: (c: Creature, kind: Produce, amount: number) => void;
   addBurrow: (x: number, z: number) => void;
   call: (c: Creature, mood: Mood) => void;
+  sound: (c: Creature, kind: CreatureSound) => void;
 }
 
 /** What gets saved. Everything else is rebuilt from the genome. */
@@ -153,6 +155,8 @@ export class Creature {
   private speed = 0;
   private walkPhase = rand() * 10;
   private altitude = 0;
+  /** In the pond (for splashes and paddling). */
+  private wet = false;
   private y = 0;
   private time = 0;
   private blinkAt = rand() * 4;
@@ -304,6 +308,7 @@ export class Creature {
         if (task.kind === 'fly' && !task.fired && this.abilities.fly >= LOOP_FLY && this.altitude > 1.8 && dist > 6 && rand() < dt * 0.5) {
           task.fired = true;
           this.startAction('loop', 1.4);
+          ctx.sound(this, 'whoosh');
         }
       }
     } else if (!task.target) {
@@ -325,7 +330,9 @@ export class Creature {
     const step = this.speed * dt * (flying ? 1 : gaitSurge(this.plan.gait, this.walkPhase));
     this.x += Math.cos(this.heading) * step;
     this.z -= Math.sin(this.heading) * step;
+    const footfall = Math.floor(this.walkPhase / Math.PI);
     this.walkPhase += (step / this.stride()) * Math.PI * GAIT_CADENCE[this.plan.gait];
+    if (Math.floor(this.walkPhase / Math.PI) !== footfall) ctx.sound(this, flying ? 'flap' : this.wet ? 'paddle' : 'step');
 
     // Personal space.
     if (this.altitude < 0.5) {
@@ -350,6 +357,10 @@ export class Creature {
       this.z = p.z;
     }
 
+    const wet = this.altitude < 0.3 && isWater(this.x, this.z);
+    if (wet && !this.wet) ctx.sound(this, 'splash');
+    this.wet = wet;
+
     const loop = this.action?.kind === 'loop' ? Math.sin(Math.PI * this.actionProgress()) * 1.5 : 0;
     this.altitude = lerp(this.altitude, task.kind === 'fly' ? 2.2 + this.skeleton.bodyHeight * 0.3 + loop : 0, Math.min(1, dt * 1.2));
     this.syncRig(dt, ctx.time);
@@ -365,6 +376,7 @@ export class Creature {
       const at = new THREE.Vector3(this.x, WATER_LEVEL + 0.05, this.z);
       ctx.effects.burst(at, 0xd8f1ff, 12, { speed: 1.4, up: 3, life: 0.8 });
       ctx.effects.ripple(at, 2.2);
+      ctx.sound(this, 'splash');
       if (rand() < 0.6) this.gather('shells', 1, ctx);
     }
     this.action = null;
@@ -489,6 +501,7 @@ export class Creature {
       options.push({
         item: () => {
           ctx.effects.emote('💨', this.rig.emoteAnchor, { life: 1.2 });
+          ctx.sound(this, 'whoosh');
           return t('zoom', randomLandPoint(rand, here, 10), 0.2, { laps: 3, tick: 0 });
         },
         weight: 0.15 + p.energy * 0.2,
@@ -526,6 +539,7 @@ export class Creature {
           if (this.abilities.reach >= SHAKE_REACH && ripe.length >= 2 && rand() < 0.4) {
             tree.shake = 1;
             this.startAction('shake', 1.5);
+            ctx.sound(this, 'shake');
             task.act = 3;
             const fallen = ripe.sort(() => rand() - 0.5).slice(0, 3);
             for (const fruit of fallen) {
@@ -545,6 +559,7 @@ export class Creature {
             const at = new THREE.Vector3();
             fruit.mesh.getWorldPosition(at);
             fx.burst(at, (fruit.mesh.material as THREE.MeshToonMaterial).color.getHex(), 6, { speed: 0.8, up: 1.5 });
+            ctx.sound(this, 'pluck');
             this.gather('fruit', 1, ctx);
           } else {
             fx.emote('❓', this.rig.emoteAnchor);
@@ -561,6 +576,7 @@ export class Creature {
           this.rig.head.getWorldPosition(nose);
           nose.y = terrainHeight(nose.x, nose.z) + 0.1;
           fx.burst(nose, 0x7a4e32, 5, { speed: 1, up: 2.2, life: 0.6, size: 0.9 });
+          ctx.sound(this, 'dig');
         }
         break;
       }
@@ -574,6 +590,7 @@ export class Creature {
           if (this.abilities.swim >= DIVE_SWIM && !this.action && rand() < 0.35) {
             this.startAction('dive', 1.8);
             fx.ripple(new THREE.Vector3(this.x, WATER_LEVEL + 0.05, this.z), 1.6);
+            ctx.sound(this, 'dive');
           }
         }
         break;
@@ -599,6 +616,7 @@ export class Creature {
         if (task.tick > 3) {
           task.tick = 0;
           fx.emote('💤', this.rig.emoteAnchor, { life: 2.4 });
+          ctx.sound(this, 'snore');
         }
         break;
       }
@@ -663,6 +681,7 @@ export class Creature {
         if (task.flower) {
           task.flower.bloom = 1;
           ctx.effects.burst(new THREE.Vector3(task.flower.x, terrainHeight(task.flower.x, task.flower.z) + 0.8, task.flower.z), 0xfff1a8, 10, { speed: 1.2, up: 1.5, gravity: 1, life: 1.4, size: 0.7 });
+          ctx.sound(this, 'bloom');
         }
         this.gather('nectar', a.fly > 0.7 ? 2 : 1, ctx);
         break;

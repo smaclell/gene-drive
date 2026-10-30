@@ -73,6 +73,9 @@ export class Lab {
     this.overlay.addEventListener('pointerdown', (e) => {
       if (e.target === this.overlay) this.close();
     });
+    this.overlay.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) ranch.sound.sfx.chime('click');
+    });
     parent.append(this.overlay);
 
     this.scene.background = new THREE.Color(0xf3ecdc);
@@ -97,6 +100,7 @@ export class Lab {
     this.applyLocks();
     this.open = true;
     this.overlay.hidden = false;
+    this.ranch.sound.sfx.chime('open');
     if (!this.renderer) {
       this.renderer = new THREE.WebGLRenderer({ antialias: true });
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -113,6 +117,7 @@ export class Lab {
     if (!this.open) return;
     this.open = false;
     this.overlay.hidden = true;
+    this.ranch.sound.sfx.chime('close');
     cancelAnimationFrame(this.frame);
     this.onClose();
   }

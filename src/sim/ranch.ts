@@ -9,10 +9,13 @@ import { planFromGenome } from '../genetics/phenotype';
 import { hatchReport, type HatchReport } from '../genetics/report';
 import { gatePoint, randomLandPoint, terrainHeight } from '../world/layout';
 import type { World } from '../world/scenery';
+import { reviveVolumes, type SoundGroup, type Volumes } from './audio';
 import { BABY_SCALE, Creature, PRODUCE, PRODUCE_IDS, type CreatureRecord, type Produce } from './creature';
 import { Effects } from './effects';
+import type { CreatureSound } from './sfx';
+import { Sound } from './sound';
 import { VISITOR_THEMES, pickTheme, themeBias } from './visitors';
-import { Voices, type Mood } from './voice';
+import type { Mood } from './voice';
 
 /**
  * The ranch: owns the herd, eggs, produce, visitors and the Journal, and
@@ -44,7 +47,10 @@ export const VISITOR_RATES: Record<VisitorRate, { label: string; factor: number 
 
 export interface Settings {
   visitors: VisitorRate;
+  /** Master mute (the 🔊 button). */
   muted: boolean;
+  /** Volume of each sound group, 0–1. */
+  volumes: Volumes;
 }
 
 export type Resources = Record<Produce, number>;
@@ -104,8 +110,9 @@ export class Ranch {
   time = 75;
   labFreeUsed = false;
   isNight = false;
-  readonly voices = new Voices();
   settings: Settings = loadSettings();
+  readonly sound = new Sound();
+  readonly voices = this.sound.voices;
   /** Hooks the UI fills in. */
   onToast: (t: Toast) => void = () => {};
   onChange: () => void = () => {};
@@ -122,6 +129,8 @@ export class Ranch {
   constructor(private readonly scene: THREE.Scene, readonly world: World) {
     this.effects = new Effects(scene);
     scene.add(this.herdGroup);
+    this.sound.setVolumes(this.settings.volumes);
+    this.voices.muted = this.settings.muted;
   }
 
   // ---- Lifecycle -------------------------------------------------------
@@ -168,6 +177,7 @@ export class Ranch {
       produce: (c: Creature, kind: Produce, amount: number) => this.produce(c, kind, amount),
       addBurrow: (x: number, z: number) => this.world.addBurrow(x, z, this.time),
       call: (c: Creature, mood: Mood) => this.voices.call(c.plan, mood, c),
+      sound: (c: Creature, kind: CreatureSound) => this.sound.sfx.creature(kind, c, c.plan.size * c.growth, c.plan.gait),
     };
     for (const c of this.creatures) c.update(dt, ctx);
     for (const c of this.creatures.filter((c) => c.gone)) {
@@ -219,6 +229,7 @@ export class Ranch {
   release(c: Creature) {
     c.wild = true;
     c.leave();
+    this.sound.sfx.chime('release', c);
     this.onToast({ icon: '🌿', text: `${c.name} is heading off to the wild.`, life: 4 });
     this.onChange();
   }
@@ -299,6 +310,7 @@ export class Ranch {
       name: childName(rng, a.name, b.name),
       generation: Math.max(a.generation, b.generation) + 1,
     });
+    this.sound.sfx.chime('picnic', spot);
     this.onToast({ icon: '🥚', text: `${a.name} and ${b.name} had a picnic… and there's an egg!`, life: 5 });
     this.onChange();
     return null;
@@ -351,6 +363,7 @@ export class Ranch {
     const at = new THREE.Vector3(egg.x, terrainHeight(egg.x, egg.z) + 0.4, egg.z);
     this.effects.burst(at, 0xf6efe0, 14, { speed: 1.6, up: 3 });
     this.effects.emote('🐣', at.clone().setY(at.y + 1), { life: 2.5 });
+    this.sound.sfx.chime('hatch', egg);
     const baby = this.add({
       id: makeId(), name: egg.name, genome: egg.genome, generation: egg.generation, parents: egg.parentNames, parentIds: egg.parentIds,
       x: egg.x, z: egg.z, growth: BABY_SCALE, wild: false, origin: 'bred',
@@ -405,6 +418,13 @@ export class Ranch {
     this.onChange();
   }
 
+  /** Set one sound group's volume (0–1). No onChange: sliders call this while dragging. */
+  setVolume(group: SoundGroup, volume: number) {
+    this.settings.volumes[group] = volume;
+    this.sound.setVolume(group, volume);
+    this.saveSettings();
+  }
+
   private saveSettings() {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
@@ -421,6 +441,7 @@ export class Ranch {
     c.heading = Math.PI;
     c.leaveAt = this.time + VISITOR_STAY;
     c.arrive();
+    this.sound.sfx.chime('visitor', p);
     this.voices.call(c.plan, 'hello', null);
     this.onToast({
       icon: '🌿',
@@ -442,6 +463,7 @@ export class Ranch {
     if (!this.spend(WELCOME_COST)) return `Welcoming costs ${WELCOME_COST} produce.`;
     c.welcome();
     this.effects.emote('💖', c.rig.emoteAnchor, { life: 2 });
+    this.sound.sfx.chime('welcome', c);
     this.onToast({ icon: '🏡', text: `${c.name} joined the ranch!`, life: 4 });
     this.recordDiscoveries(c, true);
     this.onChange();
@@ -461,6 +483,7 @@ export class Ranch {
     const p = randomLandPoint(this.rng, { x: -3, z: -10 }, 3);
     const c = this.add({ id: makeId(), name: name || randomName(this.rng), genome, generation: 1, parents: null, x: p.x, z: p.z, growth: BABY_SCALE, wild: false, origin: 'lab' });
     this.effects.burst(c.position.clone().setY(c.position.y + 0.5), 0xc4f1ff, 16, { speed: 1.5, up: 3, gravity: 3, life: 1.4 });
+    this.sound.sfx.chime('lab', c);
     this.onToast({ icon: '🧪', text: `${c.name} sprouted from the Lab!`, life: 4 });
     this.onHatch(c);
     this.onChange();
@@ -474,7 +497,9 @@ export class Ranch {
       if (this.journal.has(id)) continue;
       this.journal.add(id);
       const d = discoveryById(id);
-      if (announce && d) this.onToast({ icon: '📖', text: `New discovery: ${d.title}!`, detail: `${c.name} is the first of its kind on your ranch.`, life: 6 });
+      if (!announce || !d) continue;
+      this.sound.sfx.chime('discovery');
+      this.onToast({ icon: '📖', text: `New discovery: ${d.title}!`, detail: `${c.name} is the first of its kind on your ranch.`, life: 6 });
     }
   }
 
@@ -537,12 +562,13 @@ export class Ranch {
 }
 
 function loadSettings(): Settings {
-  const fallback: Settings = { visitors: 'sometimes', muted: false };
+  const fallback: Settings = { visitors: 'sometimes', muted: false, volumes: reviveVolumes(null) };
   try {
     const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as Partial<Settings> | null;
     return {
       visitors: raw?.visitors && raw.visitors in VISITOR_RATES ? raw.visitors : fallback.visitors,
       muted: !!raw?.muted,
+      volumes: reviveVolumes(raw?.volumes),
     };
   } catch {
     return fallback;

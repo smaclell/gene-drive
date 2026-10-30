@@ -21,7 +21,7 @@ names, and read their header comments first.
 ```bash
 npm install
 npm run dev        # Vite dev server (game at /, creature gallery at /gallery.html)
-npm test           # Vitest: genetics, anatomy, abilities, sprouts, odds, names, reports
+npm test           # Vitest: genetics, anatomy, abilities, sprouts, odds, names, reports, sound
 npm run typecheck
 npm run build      # Typecheck and production build to dist/
 ```
@@ -83,7 +83,13 @@ src/
     creature.ts     one creature: task machine (forage, dig, swim, fly, nap, quirk, zoom…), signature moves
     ranch.ts        herd, eggs, breeding, visitors, settings, saves; the UI talks to this
     visitors.ts     themed gene pools (Meadow … Curio)
-    voice.ts        WebAudio chirps; pitch from size, timbre from the voice gene
+    voice.ts        creature calls; pitch from size, timbre from the voice gene
+    audio.ts        sound engine: one AudioContext, a bus per group (ambience, music, creatures, chimes), reverb,
+                    limiter, master mute, distance fade and pan; shared noise, tone and pluck instruments
+    sound.ts        owns the engine, voices, sfx, ambience and music; main calls `update()` once a frame
+    ambience.ts     day/night bed: breeze, leaves, pond water by distance, birds, crickets, frogs, owl
+    music.ts        generative pentatonic pieces with long rests (pure, tested `composePiece`) and playback
+    sfx.ts          creature sounds (steps by gait, splashes, digging, rustles…) and chimes (hatch, discovery, UI)
     effects.ts      emotes, particles, water ripples, selection rings
   ui/          hud.ts (top bar, creature panel, partner picker, drawers, toasts), lab.ts,
                camera.ts (map-style camera), dom.ts, style.css
@@ -125,6 +131,9 @@ src/
   (and optionally `lockedMax` to lock only the top of the range). Never rename an id: they are saved.
 - **Add a visitor theme:** `VISITOR_THEMES` in `sim/visitors.ts`. A function bias rolls a new bias per visitor.
 - **Tune balance:** costs and timers are constants at the top of `sim/ranch.ts` and `sim/creature.ts`.
+- **Add a sound:** a creature sound is an entry in `CREATURE` in `sim/sfx.ts` plus `ctx.sound(this, kind)` at the
+  event in `sim/creature.ts`; an event or UI sound is an entry in `CHIME`, played with `ranch.sound.sfx.chime()`.
+  Rate-limit it (`gap`) and keep it soft: levels are set by measuring offline renders (see Debugging).
 
 ## Conventions
 
@@ -146,6 +155,11 @@ src/
   `geneDrive.ranch.spawnVisitor()`, `geneDrive.ranch.resources.fruit += 50`,
   `geneDrive.ranch.journal.add('sprouted')`, `geneDrive.game.meet(geneDrive.ranch.creatures[0])`.
 - To exercise behaviour fast, call `geneDrive.ranch.update(0.05, false)` in a loop from the console.
+- Sound lives in `geneDrive.ranch.sound` (`engine`, `voices`, `sfx`). It starts on the first click or key press.
+  To check levels without ears, attach an `AudioEngine` to an `OfflineAudioContext` with `engine.attach(ctx, true)`,
+  drive `Ambience`/`Music` from `ctx.suspend(t)` callbacks, render and measure peaks. Targets at default volume:
+  ambience bed peaks near -27 dBFS (short-term RMS under -35), music near -26, chimes -24 to -40, creature sounds
+  -29 to -40 up close, voices about -17 when poked.
 - The save lives in `localStorage` under `gene-drive-save-v1` and settings under
   `gene-drive-settings-v1`; "Start a new ranch" in Help resets the save only.
 - **Gallery** (`/gallery.html`): `?seed=&count=&theme=` picks creatures; `set=horns:0.95,legPairs:0.05`
