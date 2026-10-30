@@ -4,8 +4,14 @@ A cozy 3D creature ranch. Every creature is grown from its genome, its body
 decides what it can do, and new forms appear through breeding and mutation.
 Inspired by the creature creator in *Spore*.
 
-- **Breed** two creatures and watch their genes mix. Wings and glow are
-  recessive, so two plain parents can surprise you.
+- **Breed** two creatures and watch their genes mix. The partner list shows the
+  odds for their babies. Wings, glow, shells and second heads are recessive, so
+  two plain parents can surprise you.
+- **Truly odd shapes:** size, lumpy bodies, trunks, tusks, antlers, eye stalks,
+  tentacles, shells, sails, and *sprouts*: extra parts whose genes can copy
+  themselves or vanish from one generation to the next.
+- **Personality:** ten gaits (hop, waddle, slither, scuttle, inchworm…),
+  procedural voices, and a signature quirk for every creature.
 - **Form follows function:** long necks reach high fruit, big feet dig roots,
   tails and fins swim, and wings that are big enough let a creature fly.
 - **Wild visitors** wander in carrying new genes. Welcome them before they leave.
@@ -14,7 +20,7 @@ Inspired by the creature creator in *Spore*.
 ![A ranch of procedural creatures](docs/images/ranch.jpg)
 
 Built with [three.js](https://threejs.org/), TypeScript and Vite. All creatures,
-terrain and scenery are procedural: there are no art assets.
+terrain, scenery and sounds are procedural: there are no art or audio assets.
 
 ## Play
 
@@ -22,7 +28,7 @@ Once GitHub Pages is enabled (see below), the game is published from `main` to
 `https://smaclell.github.io/gene-drive/`. The creature gallery is at
 `/gallery.html`.
 
-![Twenty random creatures from the gallery](docs/images/gallery.jpg)
+![Twelve random creatures from the gallery](docs/images/gallery.jpg)
 
 Locally:
 
@@ -31,9 +37,14 @@ npm install
 npm run dev
 ```
 
-**Controls:** drag to orbit, right-drag to pan, scroll to zoom, click a creature
-to inspect it. Shortcuts: `B` breed, `F` follow, `H` herd, `J` journal, `L` lab,
-`Esc` deselect.
+**Controls:** drag to move around, right-drag or `Q`/`E` to turn, scroll or pinch
+to zoom, `WASD` or arrow keys to pan, `Home` to recentre. Click a creature to say
+hi and inspect it. Shortcuts: `B` breed, `F` follow, `H` herd, `J` journal,
+`L` lab, `Esc` deselect.
+
+The creature gallery takes tuning parameters, e.g.
+`gallery.html?walk=1&set=legPairs:0.05` (walking legless creatures) or
+`gallery.html?theme=curio&sprouts=2`.
 
 ## Publishing to GitHub Pages
 

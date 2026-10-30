@@ -23,27 +23,48 @@ See [`DESIGN.md`](DESIGN.md) for the vision and reasoning.
 - [x] Creature gallery page (`gallery.html`) for tuning the generator
 - [x] GitHub Pages deploy workflow and PR CI
 
-## 🎯 Milestone 2: more distinct creatures (next, pending a choice)
+## ✅ Milestone 2: more distinct, odder creatures (done)
 
-Today, creatures vary most in colour, pattern, leg count, proportions and ears.
-These additions would make silhouettes and personalities read differently at a
-glance. They are ordered by impact for effort.
-
-**Silhouette**
-1. **Overall size gene**: tiny to huge. The single biggest at-a-glance difference; also feeds reach and mass.
-2. **Tail types**: whip, club, fan, curl, double tail (dominant/recessive mix).
-3. **Head shapes**: round, long (horse), flat (frog), crested; plus jaws, beaks and tusks.
-4. **Fluff/mane**: fur tufts along the spine or neck, or a neck frill.
-5. **Horn styles**: branching antlers (procedural L-system), curled ram horns, a single unicorn horn.
-6. **Body cross-section**: flat (turtle, ray) vs tall and narrow; optional shell dome.
-7. **Leg styles**: backward-bending (digitigrade) knees, splayed insect legs, tentacles for legless creatures.
-8. **Skin finishes**: gradients, eye-spots, iridescence, translucent jelly.
+**Silhouette and composable parts**
+- [x] Size gene (0.45–2.1×): scales the whole skeleton, so reach and mass follow; tiny creatures fly and charm better
+- [x] Wider ranges on existing genes (legs, necks, heads, girth, arch, taper) for truly odd shapes
+- [x] Lumpiness: smooth bodies to caterpillar strings of beads
+- [x] Body cross-section (flat as a ray … tall and narrow) and a recessive shell dome with plates
+- [x] Tail shapes: whip, curl, club, fan; recessive twin tails
+- [x] Head shapes (frog-flat … horse-long), mouths (beak, jaws, tusks), trunks at very long snouts
+- [x] Horns: spiral unicorn horn, curled ram horns, branching antlers; axolotl frills replace the old ear horns
+- [x] Fluff: back tufts, mane, neck frill, head crest; tall back fins join into a sail
+- [x] Eye stalks; a recessive second head
+- [x] Leg styles: backward (digitigrade) knees, splayed beetle legs, tentacles; legless + tentacles walk on a skirt of them
+- [x] Skin finishes: two-tone gradient, eye-spots, iridescent sheen (shader), see-through jelly
+- [x] **Sprouts**: a variable-length list of spline-tube parts (tendrils, stalks, spines) with tips
+      (bulb, claw, leaf, eye, puff). Breeding can copy, lose or invent sprouts, so the genome grows and shrinks.
 
 **Personality and movement**
-9. **Gaits** chosen by genes: hop, waddle, slither, prance, scuttle.
-10. **Voice**: procedural chirps (WebAudio), with pitch tied to size.
-11. **Quirks**: favourite food or nap spot, signature idle (stretch, chase tail, spin).
-12. **Signature moves** tied to abilities: sky-necks shake trees, diggers leave burrows.
+- [x] Ten gaits chosen by gene and body: trot, hop, waddle, prance, scuttle, bound, slither, inch, bounce, creep
+- [x] Spine bending (slither S-waves, inchworm humps, bounding flex) that carries legs and fins along
+- [x] Voice: procedural WebAudio calls (honk, coo, chirp, trill); pitch follows size; mute button
+- [x] Quirks: signature idles (stretch, chase tail, twirl, dance, roll over, sing), favourite food and nap spot
+- [x] Signature moves: sky-necks shake trees, great diggers leave burrows and nap in them, swimmers dive for
+      shells, speedsters do zoomies, strong fliers loop the loop
+
+**Quality of life**
+- [x] Visitors come less often (about every 2½–4 minutes) and stay longer; Help has a Never/Rarely/Sometimes/Often setting
+- [x] Breeding picker in the creature panel, with baby odds ("wings 25%", "4 legs 52%") for each partner
+- [x] Cheaper picnics, shorter rests, quicker hatching and growing, herd cap 30; herd list picks partners too
+- [x] Map-style camera: drag pans, right-drag/Q/E turns, wheel/pinch zooms, WASD pans, Home recentres
+- [x] Click a creature to say hi (it answers and shows off its quirk); toasts with "Take a look"
+- [x] Journal in sections, with 58 entries including one per gait
+- [x] Lab: partly locked sliders, sprout tools, gait preview
+- [x] Gallery: `set=`, `sprouts=` and `walk=1` for tuning
+
+## 🎯 Next (pending a choice)
+
+1. **Smoother bodies:** skin the torso, neck and tail as one spline mesh so joints never show.
+2. **Sprouts that do things:** sprouts that grab fruit, eye-sprouts that spot visitors early, leaf sprouts that photosynthesise.
+3. **Lab sprout editor:** pick a sprout and drag its site, curl and length, rather than reroll.
+4. **Family tree viewer**, so lineages of odd traits are easy to follow.
+5. **Produce recipes:** treats that raise the sprout or mutation rate for one picnic.
 
 ## 🌱 Later ideas
 
@@ -59,6 +80,8 @@ glance. They are ordered by impact for effort.
 ## Known rough edges
 
 - Creatures walk through trees and the cottage (no obstacle avoidance yet).
-- Long tails can clip into the ground on very low bodies.
-- Wings fold upright at rest and can read as ears from some angles.
-- Balance numbers (costs, timings, yields) are first guesses.
+- Legs do not plant on slopes (no IK); on hills, feet can float or sink a little.
+- Very large or extreme creatures can overlap neighbours; personal space uses a rough radius.
+- Second heads and twin tails share one neck/tail animation, offset only by yaw.
+- Jelly creatures are transparent, so their parts can sort oddly from some angles.
+- Balance numbers (costs, timings, yields) are still first guesses; produce piles up quickly with a big herd.
