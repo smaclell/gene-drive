@@ -48,6 +48,8 @@ export const GENES = {
   taper: { label: 'Build', group: 'body', expression: 'blend', low: 'a heavy rear', high: 'a heavy chest', designable: true },
   arch: { label: 'Back arch', group: 'body', expression: 'blend', low: 'a sway back', high: 'an arched back', designable: true },
   bodyShape: { label: 'Body shape', group: 'body', expression: 'blend', low: 'a flatter body', high: 'a taller body', designable: true },
+  waist: { label: 'Waist', group: 'body', expression: 'blend', low: 'a fuller middle', high: 'a pinched waist', designable: true, founder: mostlyPlain(0.3, 0.25) },
+  belly: { label: 'Belly', group: 'body', expression: 'blend', low: 'a trimmer belly', high: 'a rounder belly', designable: true },
   posture: { label: 'Posture', group: 'body', expression: 'blend', low: 'a lower stance', high: 'a more upright stance', designable: true },
   shell: { label: 'Shell', group: 'body', expression: 'recessive', low: 'a smaller shell', high: 'a bigger shell', designable: true, unlockedBy: 'shelled', founder: hiddenCarrier(0.2) },
   // Limbs
@@ -88,6 +90,7 @@ export const GENES = {
   pattern: { label: 'Pattern', group: 'colour', expression: 'dominant', low: 'plainer markings', high: 'bolder markings', designable: true, founder: (rng) => clamp01(0.35 + gaussian(rng) * 0.22) },
   patternScale: { label: 'Pattern scale', group: 'colour', expression: 'blend', low: 'larger markings', high: 'finer markings', designable: true },
   finish: { label: 'Skin finish', group: 'colour', expression: 'dominant', low: 'a simpler finish', high: 'a fancier finish', designable: true, unlockedBy: 'shimmer', lockedMax: 0.75, founder: mostlyPlain(0.28, 0.24) },
+  texture: { label: 'Skin texture', group: 'colour', expression: 'dominant', low: 'smoother skin', high: 'more textured skin', designable: true, founder: mostlyPlain(0.34, 0.24) },
   glow: { label: 'Glow', group: 'colour', expression: 'recessive', low: 'a dimmer glow', high: 'a brighter glow', designable: true, unlockedBy: 'glow', founder: hiddenCarrier(0.22) },
   // Personality: how it moves, sounds and behaves. Designable, unlike temperament.
   gait: { label: 'Gait', group: 'personality', expression: 'blend', low: 'a steadier gait', high: 'a springier gait', designable: true, founder: uniform },

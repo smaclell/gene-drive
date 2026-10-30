@@ -73,6 +73,8 @@ export interface Skeleton {
   spikes: { at: V3; dir: V3; height: number }[];
   /** A dome over the middle of the back; `tilt` follows the spine there. */
   shell: { center: V3; rx: number; ry: number; rz: number; tilt: number } | null;
+  /** A round belly hanging under the middle of the torso, tipped like the spine there. */
+  belly: { center: V3; rx: number; ry: number; rz: number; tilt: number } | null;
   sprouts: SproutLayout[];
   wingRoot: V3 | null;
   /** Highest point the mouth (or a hand) can reach when stretching, in metres. */
@@ -90,12 +92,23 @@ export const SPINE_SAMPLES = 40;
 
 const v = (x: number, y: number, z = 0): V3 => ({ x, y, z });
 
-/** Body radius along the spine in metres, t = 0 at the tail end and 1 at the chest. */
+/**
+ * Where along the spine the waist pinches: toward the lighter end, so the heavy end swells
+ * into an abdomen (heavy rear, like an ant) or a barrel chest (heavy front).
+ */
+export const waistAt = (p: BodyPlan) => 0.5 - 0.1 * p.taper;
+
+/**
+ * Body radius along the spine in metres, t = 0 at the tail end and 1 at the chest. Like the
+ * metaballs along a Spore spine, each sample can swell or pinch: taper, lumps and the waist
+ * all reshape the profile.
+ */
 export function bodyRadiusAt(p: BodyPlan, t: number): number {
   const envelope = Math.pow(Math.max(0, Math.sin(Math.PI * t)), 0.5);
   const taper = 1 + 0.55 * p.taper * (t - 0.5) * 2;
   const segment = 1 - p.lumps + p.lumps * (0.5 - 0.5 * Math.cos(2 * Math.PI * p.segments * t));
-  return p.girth * p.size * envelope * taper * segment;
+  const pinch = 1 - p.waist * Math.exp(-(((t - waistAt(p)) / 0.085) ** 2));
+  return p.girth * p.size * envelope * taper * segment * pinch;
 }
 
 /** Tail centre line, relative to the tail base, in the xy plane. Never dips below `floor`. */
@@ -141,8 +154,9 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
 
   // The spine is walked out from the tail end. Its angle is the arch's slope plus the
   // posture tilt: the whole body pitches up on legs, only the front rears up when legless.
+  // A centaur's chest rears up from the middle, so the front half stands while the back half walks.
   const archSlope = (t: number) => Math.atan(p.arch * 0.22 * Math.PI * Math.cos(Math.PI * t));
-  const tiltAt = (t: number) => (hasLegs ? p.tilt : p.tilt * smoothstep(0.42, 0.95, t));
+  const tiltAt = (t: number) => (hasLegs ? p.tilt + p.rise * smoothstep(0.4, 0.72, t) : p.tilt * smoothstep(0.42, 0.95, t));
   const angles: number[] = [];
   const spine: V3[] = [];
   const step = L / (N - 1);
@@ -169,8 +183,14 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
     s.y += startY - pivot.y;
   }
 
+  // Legs spread along the body. Centaurs gather them under the back half; pinched bodies with a
+  // heavy rear carry them on the front lobe, like an insect's thorax, and the abdomen rides behind.
+  const rearing = smoothstep(0, 0.8, p.rise);
+  const insect = p.waist > 0.25 && p.taper < 0.2 && rearing < 0.3;
+  const legT0 = insect ? waistAt(p) + 0.1 : 0.22;
+  const legT1 = insect ? Math.max(legT0 + 0.1, p.armPairs > 0 ? 0.78 : 0.9) : lerp(p.armPairs > 0 ? 0.68 : 0.8, 0.48, rearing);
   const legTs = p.legPairs === 1 ? [pivotT]
-    : Array.from({ length: p.legPairs }, (_, i) => lerp(0.22, p.armPairs > 0 ? 0.68 : 0.8, i / Math.max(1, p.legPairs - 1)));
+    : Array.from({ length: p.legPairs }, (_, i) => lerp(legT0, legT1, i / Math.max(1, p.legPairs - 1)));
   const hipOut = p.legStyle === 'splayed' ? 0.85 : 0.62;
   const hipAt = (t: number, sink: number) => {
     const i = idx(t);
@@ -178,12 +198,27 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
     return v(spine[i].x - up[i].x * r, spine[i].y - up[i].y * r);
   };
 
+  // A round belly hangs under the middle of the torso.
+  let belly: Skeleton['belly'] = null;
+  if (p.belly > 0.02) {
+    const bt = insect ? waistAt(p) * 0.55 : 0.46;
+    const i = idx(bt);
+    const r = radii[i];
+    const drop = r * hs * (0.25 + 0.3 * p.belly);
+    belly = {
+      center: v(spine[i].x - up[i].x * drop, spine[i].y - up[i].y * drop),
+      rx: Math.max(r, L * (0.16 + 0.12 * p.belly)), ry: r * hs * (0.7 + 0.35 * p.belly), rz: r * w * (0.85 + 0.35 * p.belly), tilt: angles[i],
+    };
+  }
+  const bellyBottom = () => (belly ? belly.center.y - Math.hypot(belly.ry * Math.cos(belly.tilt), belly.rx * Math.sin(belly.tilt)) : Infinity);
+
   // Lift the body so its underside clears the grass and every hip has some leg below it.
-  const bottoms = spine.map((s, i) => s.y - radii[i] * hs * Math.abs(up[i].y));
+  const bottoms = [...spine.map((s, i) => s.y - radii[i] * hs * Math.abs(up[i].y)), bellyBottom()];
   let lift = Math.max(0, (hasLegs ? 0.06 * k : 0.01 * k) - Math.min(...bottoms));
   if (hasLegs) for (const t of legTs) lift = Math.max(lift, 0.3 * p.legLength * k + 0.04 * k - hipAt(t, 0.5).y);
   if (octopus) lift += tentacleLength * 0.75;
   for (const s of spine) s.y += lift;
+  if (belly) belly.center.y += lift;
   const minBottom = Math.min(...bottoms) + lift;
 
   const spineAt = (t: number) => spine[idx(t)];
@@ -215,9 +250,11 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
 
   // Neck: rises more steeply the longer it is (giraffe vs. dachshund), and never leans
   // further forward than the chest it grows from, so upright bodies carry their heads on top.
+  // A sunk head has next to no neck: it sits on the front of the body instead (see below).
   const shoulderT = 0.86;
   const shoulder = spineAt(shoulderT);
-  const neckLen = (p.neckLength + p.girth * 0.45) * k;
+  const sink = p.headSink;
+  const neckLen = Math.max(0.03 * k, (p.neckLength + p.girth * 0.45 * (1 - sink)) * k);
   const angle = Math.max(lerp(0.15, 1.2, clamp01(p.neckLength / 2)), angles[idx(shoulderT)] * 0.8);
   const dir = v(Math.cos(angle), Math.sin(angle));
   const neckEnd = v(shoulder.x + dir.x * neckLen, shoulder.y + dir.y * neckLen);
@@ -228,7 +265,16 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   const neck = [shoulder, neckMid, neckEnd];
   const neckRadii = [neckStartR, lerp(neckStartR, neckEndR, 0.6), neckEndR];
 
-  const head = { center: v(neckEnd.x + headSize * (0.35 + Math.max(0, p.headStretch) * 0.15), neckEnd.y + headSize * 0.1), radius: headSize };
+  // A sunk head melts into the front of the body with most of its face showing, like a frog or a pufferfish.
+  const onNeck = v(neckEnd.x + headSize * (0.35 + Math.max(0, p.headStretch) * 0.15), neckEnd.y + headSize * 0.1);
+  // Half of it pokes out past the front of the body, however big the chest is.
+  const tip = spine[N - 1];
+  const fx = Math.cos(angles[N - 1]);
+  const fy = Math.sin(angles[N - 1]);
+  const front = Math.max(...spine.map((q, i) => (q.x - tip.x) * fx + (q.y - tip.y) * fy + radii[i] * Math.max(hs, w) * 0.9));
+  const ahead = front - headSize * 0.45;
+  const sunk = v(tip.x + fx * ahead + headSize * 0.1, tip.y + fy * ahead + headSize * 0.12);
+  const head = { center: v(lerp(onNeck.x, sunk.x, sink), Math.max(headSize * 0.9, lerp(onNeck.y, sunk.y, sink))), radius: headSize };
 
   // Tail: lifts, then droops (or whips, curls…). Never dips below the grass.
   const tb = spineAt(0.07);
@@ -302,14 +348,15 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   const handReach = arms.length ? Math.max(...arms.map((a) => a.shoulder.y + a.length * 0.95)) : 0;
   const reach = Math.max(headReach, handReach);
   const shellMass = shell ? L * G * G * 0.5 : 0;
+  const bellyMass = belly ? belly.rx * belly.ry * belly.rz * 2.5 : 0;
   const armMass = p.armPairs * p.armLength * 0.7 * Math.pow(p.legGirth * 0.7 + 0.03, 2) * 3 * k * k * k;
-  const mass = L * G * G * 1.6 * w * hs + Math.pow(headSize, 3) * 2 + p.legPairs * p.legLength * p.legGirth * 0.6 * k * k * k + shellMass + armMass;
+  const mass = L * G * G * 1.6 * w * hs + Math.pow(headSize, 3) * 2 + p.legPairs * p.legLength * p.legGirth * 0.6 * k * k * k + shellMass + armMass + bellyMass;
   const tailEnd = Math.min(...tail.map((q) => q.x), spine[0].x);
   const length = head.center.x + headSize * 1.3 - tailEnd;
 
   const skel: Skeleton = {
     scale: k, spine, radii, up, back, widthScale: w, heightScale: hs, neck, neckRadii, head, tail, tailRadii, legs, tentacles, arms,
-    spikes, shell, sprouts: [], wingRoot, reach, mass, length, bodyHeight: spineAt(0.5).y, sitDrop: Math.max(0, minBottom - 0.03 * k),
+    spikes, shell, belly, sprouts: [], wingRoot, reach, mass, length, bodyHeight: spineAt(0.5).y, sitDrop: Math.max(0, minBottom - 0.03 * k),
   };
   skel.sprouts = layoutSprouts(p, skel);
   return skel;

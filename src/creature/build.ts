@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { cells2, cells3, noise3 } from '../core/noise';
-import { clamp, lerp, mulberry32, smoothstep, type Rng } from '../core/rng';
+import { clamp, clamp01, lerp, mulberry32, smoothstep, type Rng } from '../core/rng';
 import type { ArmLayout, LegLayout, Skeleton, SproutLayout, V3 } from '../genetics/anatomy';
 import type { BodyPlan, Hands, Hsl, LegStyle } from '../genetics/phenotype';
 import { creatureMaterials, type CreatureMaterials } from './materials';
@@ -483,7 +483,8 @@ function buildHead(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vect
   const { plan, pal, skin, mesh } = ctx;
   const hs = headScale(plan);
   const q = head.getWorldQuaternion(new THREE.Quaternion());
-  blobEllipsoid(ctx, 'head', at(head), { x: hr * hs.sx, y: hr * hs.sy, z: hr * hs.sz }, q, boneIds(head), hr * 0.45, 0, 1, hr * 2);
+  // A sunk head melts softly into the chest, so face and body read as one shape.
+  blobEllipsoid(ctx, 'head', at(head), { x: hr * hs.sx, y: hr * hs.sy, z: hr * hs.sz }, q, boneIds(head), hr * (0.45 + 0.55 * plan.headSink), 0, 1, hr * 2);
   buildMouth(ctx, head, hr, world);
   buildEyes(ctx, head, hr, world);
   buildEars(ctx, head, hr);
@@ -1364,6 +1365,17 @@ export function buildCreature(plan: BodyPlan, skel: Skeleton, seed: number): Cre
     const last = ctx.blobs[ctx.blobs.length - 1];
     last.stretchUp = skel.heightScale;
     last.stretchSide = skel.widthScale;
+  }
+
+  // A round belly: one soft ellipsoid under the middle, bending with the spine bones over it.
+  if (skel.belly) {
+    const b = skel.belly;
+    let near = 0;
+    for (let i = 1; i < n; i++) if (Math.hypot(skel.spine[i].x - b.center.x, skel.spine[i].y - b.center.y) < Math.hypot(skel.spine[near].x - b.center.x, skel.spine[near].y - b.center.y)) near = i;
+    const t = near / (n - 1);
+    const half = b.rx / L;
+    const rotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), b.tilt);
+    blobEllipsoid(ctx, 'torso', b.center, { x: b.rx, y: b.ry, z: b.rz }, rotation, spineChain, b.ry * 0.7, clamp01(t - half), clamp01(t + half), L);
   }
 
   buildBack(ctx, body);

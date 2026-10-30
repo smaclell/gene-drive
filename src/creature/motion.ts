@@ -400,10 +400,12 @@ export function animate(rig: CreatureRig, plan: BodyPlan, skel: Skeleton, s: Mot
   // Legless creatures without a spine wave still wriggle a little.
   if (legless && !g.bendZ && !g.bendY && plan.gait !== 'bounce') rig.body.rotation.y += Math.sin(phase * 0.8) * 0.14 * m;
 
+  // A head sunk into the body only turns a little, or it would twist the chest with it.
+  const headFree = 1 - 0.7 * plan.headSink;
   rig.heads.forEach((h, i) => {
-    h.rotation.z = head + slopes.headPitch + (s.foraging ? Math.sin(time * 8) * 0.06 : 0);
+    h.rotation.z = (head + slopes.headPitch + (s.foraging ? Math.sin(time * 8) * 0.06 : 0)) * headFree;
     // A second head has a mind of its own.
-    const target = i === 0 ? headYaw - slopes.headYaw * 0.6 : -headYaw * 0.6 + Math.sin(time * 0.7) * 0.4;
+    const target = (i === 0 ? headYaw - slopes.headYaw * 0.6 : -headYaw * 0.6 + Math.sin(time * 0.7) * 0.4) * headFree;
     h.rotation.y += (target - h.rotation.y) * 0.08;
   });
   for (const n of rig.necks) n.rotation.y = n.userData.baseYaw + slopes.headYaw * 0.4;

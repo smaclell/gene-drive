@@ -1,4 +1,4 @@
-import { lerp, smoothstep, wrap01 } from '../core/rng';
+import { clamp01, lerp, smoothstep, wrap01 } from '../core/rng';
 import { RECESSIVE_THRESHOLD } from './genes';
 import { express, type Expressed, type Genome } from './genome';
 import { expressSprout, type Sprout, type SproutGene } from './sprouts';
@@ -22,6 +22,8 @@ export type LegStyle = 'straight' | 'digitigrade' | 'splayed' | 'tentacles';
 /** What is on the end of the arms. */
 export type Hands = 'paws' | 'claws' | 'pincers';
 export type Finish = 'matte' | 'gradient' | 'eyespots' | 'iridescent' | 'jelly';
+/** Fine surface detail, drawn in the shader: soft fuzz, overlapping scales or raised pebbles. */
+export type SkinTexture = 'smooth' | 'velvet' | 'scales' | 'pebbles';
 /** How a creature gets around. Picked by the gait gene from the gaits its body allows. */
 export type Gait = 'walk' | 'hop' | 'waddle' | 'prance' | 'scuttle' | 'bound' | 'slither' | 'inch' | 'bounce' | 'creep' | 'roll' | 'float';
 /** Signature idle, shown when a creature is content. */
@@ -46,6 +48,10 @@ export interface BodyPlan {
   /** -1 heavy rear … +1 heavy chest. */
   taper: number;
   arch: number;
+  /** How deeply the torso pinches into a front and a back lobe, like an ant: 0 … 0.75. */
+  waist: number;
+  /** A round belly hanging under the middle of the torso: 0 none … 1 very round. */
+  belly: number;
   /** Cross-section: side-to-side and top-to-bottom stretch of the torso. */
   bodyWidth: number;
   bodyTall: number;
@@ -54,6 +60,11 @@ export interface BodyPlan {
    * upright (≈1.3); four or more legs only slope the back; legless bodies rear up at the front.
    */
   tilt: number;
+  /**
+   * Extra pitch in radians for the front half of a body on two or more leg pairs: the chest
+   * rears up like a centaur's, and the legs gather under the back half.
+   */
+  rise: number;
   shell: boolean;
   legPairs: number;
   legLength: number;
@@ -64,7 +75,10 @@ export interface BodyPlan {
   armPairs: number;
   armLength: number;
   hands: Hands;
+  /** Neck length in shape units. 0 when the head is sunk into the body. */
   neckLength: number;
+  /** 0 a head on a neck … 1 a head melted into the front of the body, like a frog or a pufferfish. */
+  headSink: number;
   headSize: number;
   /** -1 wide and flat (frog) … 0 round … +1 long (horse). */
   headStretch: number;
@@ -98,6 +112,7 @@ export interface BodyPlan {
   pattern: Pattern;
   patternScale: number;
   finish: Finish;
+  texture: SkinTexture;
   gait: Gait;
   voice: { timbre: Timbre; /** Base pitch in Hz: big creatures rumble, tiny ones squeak. */ pitch: number };
   quirk: Quirk;
@@ -139,12 +154,19 @@ function legPairsFrom(v: number): number {
 
 const HANDS: Hands[] = ['paws', 'claws', 'pincers'];
 
-/** Torso pitch from the posture gene; what it means depends on how many legs hold the body up. */
+/**
+ * Torso pitch from the posture gene; what it means depends on how many legs hold the body up.
+ * On two or more pairs the low half of the gene slopes the back (rear high … shoulders high, like a hyena)
+ * and the top of it rears the chest up instead (see `riseFrom`).
+ */
 function tiltFrom(posture: number, legPairs: number): number {
   if (legPairs === 1) return lerp(0.2, 1.3, smoothstep(0.2, 0.8, posture));
   if (legPairs === 0) return 1.2 * smoothstep(0.55, 0.92, posture);
-  return lerp(-0.14, 0.24, posture) / (legPairs >= 3 ? 2 : 1);
+  return lerp(-0.22, 0.34, smoothstep(0.08, 0.68, posture)) / (legPairs >= 3 ? 1.6 : 1);
 }
+
+/** Centaur fronts: only bodies with two or more leg pairs can rear up their chest and keep walking. */
+const riseFrom = (posture: number, legPairs: number) => (legPairs >= 2 ? 1.25 * smoothstep(0.68, 0.95, posture) : 0);
 
 const hsl = (h: number, s: number, l: number): Hsl => ({ h: wrap01(h), s: Math.min(0.92, Math.max(0, s)), l: Math.min(0.92, Math.max(0.12, l)) });
 
@@ -213,11 +235,18 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
   const wingsOn = e.wings >= (RECESSIVE_THRESHOLD.wings ?? 0.6);
   const legPairs = legPairsFrom(e.legPairs);
   const legStyle = bucket(e.legStyle, [0.45, 0.66, 0.84], ['straight', 'digitigrade', 'splayed', 'tentacles'] as const);
-  const bodyLength = through(0.8, 2, 4, e.bodyLength);
+  // Bodies are rounder than they used to be: an everyday creature is a bean, not a sausage.
+  const bodyLength = through(0.75, 1.7, 3.8, e.bodyLength);
   const headStretch = lerp(-1, 1, e.headShape);
-  const girth = through(0.2, 0.52, 1, e.girth);
+  const girth = through(0.22, 0.56, 1, e.girth);
   const shell = e.shell >= (RECESSIVE_THRESHOLD.shell ?? 0.62);
-  const round = shell || (bodyLength < 1.7 && girth > 0.55);
+  const round = shell || (bodyLength < 1.4 && girth > 0.62);
+  // The bottom of the neck gene sinks the head into the chest instead.
+  const neck = lerp(-0.55, 2.5, Math.pow(e.neckLength, 1.3));
+  // Legs are sized against the body they carry, so big bodies stand on sturdy legs rather than stilts.
+  // Pinched, insect-like bodies get slender legs.
+  const waist = 0.75 * smoothstep(0.42, 0.92, e.waist);
+  const legGirth = Math.max(0.035, (girth * through(0.17, 0.3, 0.5, e.legGirth) * (1 - 0.65 * waist)) / (1 + 0.12 * Math.max(0, legPairs - 1)));
   // Geometric, so the middle of the gene is a size-1 creature.
   const size = 0.45 * Math.pow(2.1 / 0.45, e.size);
 
@@ -229,19 +258,23 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
     girth,
     taper: lerp(-1, 1, e.taper),
     arch: through(-0.35, 0.15, 0.9, e.arch),
+    waist,
+    belly: smoothstep(0.45, 0.95, e.belly),
     bodyWidth: through(1.7, 0.95, 0.6, e.bodyShape),
     bodyTall: through(0.65, 1, 1.3, e.bodyShape),
     tilt: tiltFrom(e.posture, legPairs),
+    rise: riseFrom(e.posture, legPairs),
     shell,
     legPairs,
-    legLength: through(0.18, 0.9, 2.5, e.legLength),
-    legGirth: through(0.035, 0.12, 0.26, e.legGirth),
+    legLength: through(0.15, 0.72, 2.3, e.legLength),
+    legGirth,
     footSize: through(0.5, 1.15, 2.2, e.footSize),
     legStyle,
     armPairs: e.arms < 0.6 ? 0 : e.arms < 0.9 ? 1 : 2,
     armLength: through(0.35, 0.75, 1.5, e.armLength),
     hands: bucket(e.hands, [0.52, 0.75], HANDS),
-    neckLength: lerp(0.05, 2.6, Math.pow(e.neckLength, 1.4)),
+    neckLength: Math.max(0, neck),
+    headSink: clamp01(-neck / 0.4),
     headSize: through(0.18, 0.47, 0.95, e.headSize),
     headStretch,
     headShape: headStretch < -0.4 ? 'flat' : headStretch > 0.4 ? 'long' : 'round',
@@ -266,6 +299,7 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
     pattern: quantize(e.pattern, PATTERNS),
     patternScale: lerp(0.8, 3.2, e.patternScale),
     finish: bucket(e.finish, [0.5, 0.63, 0.76, 0.88], ['matte', 'gradient', 'eyespots', 'iridescent', 'jelly'] as const),
+    texture: bucket(e.texture, [0.48, 0.63, 0.79], ['smooth', 'velvet', 'scales', 'pebbles'] as const),
     gait: gaitFor(e.gait, legPairs, legStyle, bodyLength, round),
     voice: { timbre: quantize(e.voice, TIMBRES), pitch: 430 * lerp(0.75, 1.45, e.voice) / Math.pow(size, 0.8) },
     quirk: quantize(e.quirk, QUIRKS),
@@ -281,6 +315,9 @@ export const planFromGenome = (genome: Genome) => planFromExpressed(express(geno
 
 /** A biped standing tall, like a penguin or a person, rather than leaning forward like a bird. */
 export const isUpright = (p: BodyPlan) => p.legPairs === 1 && p.tilt > 0.9;
+
+/** A body on two or more leg pairs with its chest reared up, like a centaur. */
+export const isCentaur = (p: BodyPlan) => p.legPairs >= 2 && p.rise > 0.6;
 
 // ---- Words -------------------------------------------------------------
 
@@ -314,6 +351,7 @@ export const TIMBRE_LABEL: Record<Timbre, string> = { honk: 'Honks', coo: 'Coos'
 export const NAP_SPOT: Record<Food, string> = { fruit: 'under a tree', roots: 'by the soil patch', nectar: 'in the flowers', shells: 'by the pond' };
 
 const FINISH_WORD: Record<Finish, string> = { matte: '', gradient: 'two-tone', eyespots: 'eye-spotted', iridescent: 'shimmering', jelly: 'jelly-like' };
+const TEXTURE_WORD: Record<SkinTexture, string> = { smooth: '', velvet: 'velvety', scales: 'scaly', pebbles: 'pebbly' };
 
 /** A one-line, human description: "A tiny, beaked, 2-legged strider that hops, with spotted teal skin." */
 export function describePlan(p: BodyPlan): string {
@@ -327,6 +365,9 @@ export function describePlan(p: BodyPlan): string {
   else if (p.armPairs === 1) bits.push(p.hands === 'pincers' ? 'pincered' : p.hands === 'claws' ? 'taloned' : 'two-armed');
   if (isUpright(p)) bits.push('upright');
   if (p.legPairs === 0 && p.tilt > 0.6) bits.push('rearing');
+  if (p.headSink > 0.5) bits.push('neckless');
+  if (p.waist > 0.35) bits.push('wasp-waisted');
+  if (p.belly > 0.6) bits.push('pot-bellied');
   if (p.lumps > 0.35) bits.push('lumpy');
   if (p.snout > 0.75 && p.mouth === 'plain') bits.push('trunked');
   if (p.spikes > 1.1) bits.push('sail-backed');
@@ -357,10 +398,12 @@ export function describePlan(p: BodyPlan): string {
 
   const tentacled = p.legStyle === 'tentacles';
   const legs = p.legPairs === 0 ? (tentacled ? 'tentacled' : 'legless') : `${p.legPairs * 2}-${tentacled ? 'tentacled' : 'legged'}`;
-  const shape = p.legPairs === 0 ? (tentacled ? 'squiggle' : p.tailLength > 1.2 ? 'noodle' : 'blob') : p.legPairs === 1 ? (isUpright(p) ? 'biped' : 'strider') : 'critter';
+  const shape = p.legPairs === 0 ? (tentacled ? 'squiggle' : p.tailLength > 1.2 ? 'noodle' : 'blob')
+    : p.legPairs === 1 ? (isUpright(p) ? 'biped' : 'strider')
+    : isCentaur(p) ? 'centaur' : p.waist > 0.35 && p.legPairs >= 3 ? 'bug' : 'critter';
   const adjectives = [...bits.slice(0, 2), legs].join(', ');
   const pattern = p.pattern === 'plain' ? '' : p.pattern === 'patches' ? 'patchy' : p.pattern === 'spots' ? 'spotted' : 'striped';
-  const skin = [pattern, FINISH_WORD[p.finish]].filter(Boolean).join(', ');
+  const skin = [pattern, TEXTURE_WORD[p.texture], FINISH_WORD[p.finish]].filter(Boolean).join(', ');
   const glow = p.glow ? ' It glows at night.' : '';
   return `A ${adjectives} ${shape} that ${GAIT_LABEL[p.gait].verb}, with ${skin ? `${skin} ` : ''}${hueName(p.colour.body)} skin.${glow}`;
 }

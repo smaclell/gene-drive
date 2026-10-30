@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { mulberry32 } from '../src/core/rng';
 import { computeAbilities } from '../src/genetics/abilities';
-import { buildSkeleton } from '../src/genetics/anatomy';
+import { bodyRadiusAt, buildSkeleton, waistAt } from '../src/genetics/anatomy';
 import { DISCOVERIES } from '../src/genetics/discoveries';
 import { GENES, GENE_IDS } from '../src/genetics/genes';
 import { breed, express, expressGene, homozygousGenome, randomGenome, reviveGenome, type Genome } from '../src/genetics/genome';
 import { childName, randomName } from '../src/genetics/names';
-import { GAIT_LABEL, describePlan, gaitFor, isUpright, planFromExpressed, planFromGenome, type Gait } from '../src/genetics/phenotype';
+import { GAIT_LABEL, describePlan, gaitFor, isCentaur, isUpright, planFromExpressed, planFromGenome, type Gait } from '../src/genetics/phenotype';
 import { hatchReport, offspringOdds, traitsOf } from '../src/genetics/report';
 import { MAX_SPROUTS, describeSprout, inheritSprouts, randomSprout, reviveSprouts } from '../src/genetics/sprouts';
 import { VISITOR_THEMES, themeBias } from '../src/sim/visitors';
@@ -371,5 +371,97 @@ describe('milestone 3 bodies', () => {
       expect(Math.abs(body.l - accent.l)).toBeGreaterThan(0.12);
       expect(belly.l).toBeGreaterThan(body.l);
     }
+  });
+});
+
+describe('milestone 4 bodies', () => {
+  const base = () => express(randomGenome(mulberry32(90)));
+
+  it('pinches a waist into two lobes, with slender legs on the front one', () => {
+    const e = { ...base(), waist: 1, taper: 0.2, legPairs: 0.8, lumps: 0 };
+    const p = planFromExpressed(e);
+    const w = waistAt(p);
+    expect(bodyRadiusAt(p, w)).toBeLessThan(bodyRadiusAt(p, w - 0.2) * 0.5);
+    expect(bodyRadiusAt(p, w)).toBeLessThan(bodyRadiusAt(p, w + 0.2) * 0.5);
+    expect(p.legGirth).toBeLessThan(planFromExpressed({ ...e, waist: 0 }).legGirth);
+    const s = buildSkeleton(p);
+    const n = s.spine.length - 1;
+    const waistX = s.spine[Math.round(w * n)].x;
+    for (const leg of s.legs) expect(leg.hip.x).toBeGreaterThan(waistX);
+    expect(describePlan(p)).toContain('wasp-waisted');
+  });
+
+  it('hangs a round belly that still clears the grass', () => {
+    const rng = mulberry32(91);
+    for (let i = 0; i < 200; i++) {
+      const p = planFromExpressed({ ...express(randomGenome(rng)), belly: 1 });
+      const s = buildSkeleton(p);
+      expect(s.belly).not.toBeNull();
+      const b = s.belly!;
+      expect(b.center.y - Math.hypot(b.ry * Math.cos(b.tilt), b.rx * Math.sin(b.tilt))).toBeGreaterThan(-1e-6);
+      expect(s.sitDrop).toBeGreaterThanOrEqual(0);
+    }
+    expect(buildSkeleton(planFromExpressed({ ...base(), belly: 0 })).belly).toBeNull();
+  });
+
+  it('rears up a centaur chest while every leg stays on the ground', () => {
+    const e = { ...base(), legPairs: 0.55, posture: 0.97, arms: 0.7 };
+    const p = planFromExpressed(e);
+    expect(isCentaur(p)).toBe(true);
+    expect(isCentaur(planFromExpressed({ ...e, legPairs: 0.3 }))).toBe(false);
+    expect(isCentaur(planFromExpressed({ ...e, posture: 0.5 }))).toBe(false);
+    const s = buildSkeleton(p);
+    const chest = s.spine[s.spine.length - 1];
+    const mid = s.spine[Math.round((s.spine.length - 1) / 2)];
+    expect(chest.y - mid.y).toBeGreaterThan(Math.abs(chest.x - mid.x) * 0.8);
+    for (const leg of s.legs) {
+      expect(leg.length).toBeCloseTo(leg.hip.y);
+      expect(leg.hip.x).toBeLessThan(mid.x + s.radii[Math.round((s.radii.length - 1) / 2)]);
+    }
+    expect(describePlan(p)).toContain('centaur');
+  });
+
+  it('sinks the head into the body at the bottom of the neck gene', () => {
+    const rng = mulberry32(92);
+    let sunk = 0;
+    for (let i = 0; i < 400; i++) {
+      const p = planFromGenome(randomGenome(rng));
+      if (p.headSink > 0.5) sunk++;
+    }
+    // Roughly one founder in ten has no neck.
+    expect(sunk / 400).toBeGreaterThan(0.04);
+    expect(sunk / 400).toBeLessThan(0.25);
+    for (let i = 0; i < 100; i++) {
+      const p = planFromExpressed({ ...express(randomGenome(rng)), neckLength: 0 });
+      expect(p.headSink).toBe(1);
+      expect(p.neckLength).toBe(0);
+      const s = buildSkeleton(p);
+      // The face pokes out of the front of the body but stays attached to it.
+      const tip = s.spine[s.spine.length - 1];
+      expect(Math.hypot(s.head.center.x - tip.x, s.head.center.y - tip.y)).toBeLessThan(s.radii.reduce((a, b) => Math.max(a, b)) * 1.6 + s.head.radius);
+      expect(s.head.center.y).toBeGreaterThan(s.head.radius * 0.85);
+    }
+  });
+
+  it('maps skin texture and lists new forms in the Journal', () => {
+    const e = base();
+    expect(planFromExpressed({ ...e, texture: 0.1 }).texture).toBe('smooth');
+    expect(planFromExpressed({ ...e, texture: 0.95 }).texture).toBe('pebbles');
+    const ids = DISCOVERIES.map((d) => d.id);
+    for (const id of ['centaur', 'wasp-waist', 'pot-belly', 'neckless', 'velvet', 'scales', 'pebbles']) expect(ids).toContain(id);
+    expect(traitsOf(planFromExpressed({ ...e, texture: 0.7 })).texture).toBe('scales');
+  });
+
+  it('sends Hive visitors with pinched waists and Bog visitors with no necks', () => {
+    const rng = mulberry32(93);
+    const theme = (id: string) => VISITOR_THEMES.find((t) => t.id === id)!;
+    let hive = 0;
+    let bog = 0;
+    for (let i = 0; i < 100; i++) {
+      if (planFromGenome(randomGenome(rng, themeBias(theme('hive'), rng))).waist > 0.35) hive++;
+      if (planFromGenome(randomGenome(rng, themeBias(theme('bog'), rng))).headSink > 0.5) bog++;
+    }
+    expect(hive).toBeGreaterThan(80);
+    expect(bog).toBeGreaterThan(80);
   });
 });

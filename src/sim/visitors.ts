@@ -89,6 +89,18 @@ export const VISITOR_THEMES: VisitorTheme[] = [
     bias: { shell: carrier(0.8), legStyle: around(0.74, 0.05), legPairs: around(0.84, 0.05), bodyShape: around(0.15), legLength: around(0.25), hue: around(0.12, 0.03), lightness: around(0.6), gait: around(0.9, 0.08), quirk: around(0.75, 0.05), girth: around(0.75), bodyLength: around(0.25) },
   },
   {
+    id: 'hive',
+    title: 'Hive',
+    flavour: 'buzzed over from the clover',
+    bias: { waist: around(0.92, 0.05), taper: around(0.15), legPairs: around(0.78, 0.05), legStyle: around(0.75, 0.05), earType: around(0.92, 0.04), texture: around(0.71, 0.04), wings: carrier(0.5), hue: around(0.13, 0.03), pattern: around(0.92, 0.04), size: around(0.3), gait: around(0.8) },
+  },
+  {
+    id: 'bog',
+    title: 'Bog',
+    flavour: 'plopped out of the pond',
+    bias: { neckLength: around(0.07, 0.05), headShape: around(0.12), belly: around(0.85), legPairs: around(0.55, 0.05), legStyle: around(0.55, 0.04), legLength: around(0.3), tailLength: around(0.1), gait: around(0.95, 0.04), texture: around(0.88, 0.05), eyeSize: around(0.85), hue: around(0.45, 0.05), mouth: around(0.2) },
+  },
+  {
     id: 'curio',
     title: 'Curio',
     flavour: 'looks like it wandered out of a dream',

@@ -1,5 +1,5 @@
 import { canFly, type Abilities } from './abilities';
-import { isUpright, type BodyPlan, type Gait } from './phenotype';
+import { isCentaur, isUpright, type BodyPlan, type Gait } from './phenotype';
 
 /**
  * Journal entries: notable forms the player can discover by breeding or
@@ -43,6 +43,9 @@ export const DISCOVERIES: Discovery[] = [
   { id: 'pincers', title: 'Pincers', hint: 'The fanciest hands: snip, snip. Reef visitors carry them.', section: 'Body', test: (p) => p.armPairs > 0 && p.hands === 'pincers' },
   { id: 'upright', title: 'Upright', hint: 'Two legs and a tall posture, like a penguin.', section: 'Body', test: (p) => isUpright(p) },
   { id: 'rearing', title: 'Rearing', hint: 'A legless body that lifts its front, like a cobra.', section: 'Body', test: (p) => p.legPairs === 0 && p.tilt > 0.6 },
+  { id: 'centaur', title: 'Centaur', hint: 'Four or more legs and a chest that stands tall. Try the top of the posture gene.', section: 'Body', test: (p) => isCentaur(p) },
+  { id: 'wasp-waist', title: 'Wasp waist', hint: 'A body pinched in two, like an ant. Hive visitors have them.', section: 'Body', test: (p) => p.waist > 0.35 },
+  { id: 'pot-belly', title: 'Pot belly', hint: 'A belly as round as a teapot.', section: 'Body', test: (p) => p.belly > 0.6 },
   // Head
   { id: 'two-headed', title: 'Two heads', hint: 'Recessive, and very rare. Curio visitors sometimes carry it.', section: 'Head', test: (p) => p.twinHead },
   { id: 'eye-stalks', title: 'Eye stalks', hint: 'Eyes on stalks, like a snail.', section: 'Head', test: (p) => p.eyeStalks > 0 },
@@ -57,6 +60,7 @@ export const DISCOVERIES: Discovery[] = [
   { id: 'beaked', title: 'Beak', hint: 'A fancier mouth.', section: 'Head', test: (p) => p.mouth === 'beak' },
   { id: 'tusked', title: 'Tusks', hint: 'The fanciest mouth. Great for digging.', section: 'Head', test: (p) => p.mouth === 'tusks' },
   { id: 'frog-face', title: 'Frog face', hint: 'A wide, flat head with eyes on top.', section: 'Head', test: (p) => p.headShape === 'flat' },
+  { id: 'neckless', title: 'All one piece', hint: 'No neck at all: the face sits right on the body. Bog visitors look like this.', section: 'Head', test: (p) => p.headSink > 0.5 },
   // Tails & extras
   { id: 'sprouted', title: 'Sprouts', hint: 'A new part grows out of nowhere. Mutations can add them.', section: 'Tails & extras', test: (p) => p.sprouts.length > 0 },
   { id: 'overgrown', title: 'Overgrown', hint: 'Three or more sprouts. Sprouts can copy themselves.', section: 'Tails & extras', test: (p) => p.sprouts.length >= 3 },
@@ -74,6 +78,9 @@ export const DISCOVERIES: Discovery[] = [
   { id: 'eyespots', title: 'Eye-spots', hint: 'Markings that stare back.', section: 'Skin', test: (p) => p.finish === 'eyespots' },
   { id: 'shimmer', title: 'Shimmer', hint: 'Skin that changes colour as it moves.', section: 'Skin', test: (p) => p.finish === 'iridescent' || p.finish === 'jelly' },
   { id: 'jelly', title: 'Jelly', hint: 'The rarest finish: see-through skin.', section: 'Skin', test: (p) => p.finish === 'jelly' },
+  { id: 'velvet', title: 'Velvet', hint: 'Soft, fuzzy skin.', section: 'Skin', test: (p) => p.texture === 'velvet' },
+  { id: 'scales', title: 'Scales', hint: 'Skin in overlapping scales. Texture is dominant.', section: 'Skin', test: (p) => p.texture === 'scales' },
+  { id: 'pebbles', title: 'Pebbly', hint: 'The bumpiest skin of all.', section: 'Skin', test: (p) => p.texture === 'pebbles' },
   { id: 'glow', title: 'Glow', hint: 'Recessive. Watch for it at night.', section: 'Skin', test: (p) => p.glow },
   // Gaits
   gait('hopper', 'hop', 'Hopper', 'A springy gait on legs.'),
