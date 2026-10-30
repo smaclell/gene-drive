@@ -7,10 +7,14 @@ Inspired by the creature creator in *Spore*.
 - **Breed** two creatures and watch their genes mix. The partner list shows the
   odds for their babies. Wings, glow, shells and second heads are recessive, so
   two plain parents can surprise you.
-- **Truly odd shapes:** size, lumpy bodies, trunks, tusks, antlers, eye stalks,
-  tentacles, shells, sails, and *sprouts*: extra parts whose genes can copy
-  themselves or vanish from one generation to the next.
-- **Personality:** ten gaits (hop, waddle, slither, scuttle, inchworm…),
+- **Spore-style bodies:** every creature's skin is one smooth, blobby surface
+  grown from metaballs and bent by bones, painted in layers (base, coat, pattern,
+  belly) with irises, lids and a smile.
+- **Truly odd shapes:** size, lumpy bodies, arms with paws, talons or pincers,
+  upright bipeds, trunks, tusks, antlers, eye stalks, tentacles, shells, sails,
+  and *sprouts*: extra parts whose genes can copy themselves or vanish from one
+  generation to the next.
+- **Personality:** twelve gaits (hop, waddle, slither, scuttle, roll, float…),
   procedural voices, and a signature quirk for every creature.
 - **Form follows function:** long necks reach high fruit, big feet dig roots,
   tails and fins swim, and wings that are big enough let a creature fly.

@@ -1,4 +1,4 @@
-import { lerp, wrap01 } from '../core/rng';
+import { lerp, smoothstep, wrap01 } from '../core/rng';
 import { RECESSIVE_THRESHOLD } from './genes';
 import { express, type Expressed, type Genome } from './genome';
 import { expressSprout, type Sprout, type SproutGene } from './sprouts';
@@ -19,9 +19,11 @@ export type Horns = 'none' | 'unicorn' | 'ram' | 'antlers';
 export type Fluff = 'none' | 'tufts' | 'mane' | 'frill' | 'crest';
 export type TailShape = 'plain' | 'whip' | 'curl' | 'club' | 'fan';
 export type LegStyle = 'straight' | 'digitigrade' | 'splayed' | 'tentacles';
+/** What is on the end of the arms. */
+export type Hands = 'paws' | 'claws' | 'pincers';
 export type Finish = 'matte' | 'gradient' | 'eyespots' | 'iridescent' | 'jelly';
 /** How a creature gets around. Picked by the gait gene from the gaits its body allows. */
-export type Gait = 'walk' | 'hop' | 'waddle' | 'prance' | 'scuttle' | 'bound' | 'slither' | 'inch' | 'bounce' | 'creep';
+export type Gait = 'walk' | 'hop' | 'waddle' | 'prance' | 'scuttle' | 'bound' | 'slither' | 'inch' | 'bounce' | 'creep' | 'roll' | 'float';
 /** Signature idle, shown when a creature is content. */
 export type Quirk = 'stretch' | 'chase' | 'twirl' | 'dance' | 'roll' | 'sing';
 export type Timbre = 'honk' | 'coo' | 'chirp' | 'trill';
@@ -47,12 +49,21 @@ export interface BodyPlan {
   /** Cross-section: side-to-side and top-to-bottom stretch of the torso. */
   bodyWidth: number;
   bodyTall: number;
+  /**
+   * Torso pitch in radians, chest up. Bipeds stand from a forward lean (≈0.3) up to
+   * upright (≈1.3); four or more legs only slope the back; legless bodies rear up at the front.
+   */
+  tilt: number;
   shell: boolean;
   legPairs: number;
   legLength: number;
   legGirth: number;
   footSize: number;
   legStyle: LegStyle;
+  /** 0, 1 or 2 pairs of arms on the chest. Arms never touch the ground. */
+  armPairs: number;
+  armLength: number;
+  hands: Hands;
   neckLength: number;
   headSize: number;
   /** -1 wide and flat (frog) … 0 round … +1 long (horse). */
@@ -79,7 +90,11 @@ export interface BodyPlan {
   /** Wing span; 0 means no wings. */
   wingSpan: number;
   glow: boolean;
-  colour: { body: Hsl; accent: Hsl; belly: Hsl };
+  /**
+   * Paint layers, after Spore's base / coat / detail: `body` is the base, `coat` darkens
+   * the back, `accent` is the pattern (detail) colour, `belly` the pale underside.
+   */
+  colour: { body: Hsl; coat: Hsl; accent: Hsl; belly: Hsl; iris: Hsl };
   pattern: Pattern;
   patternScale: number;
   finish: Finish;
@@ -115,11 +130,57 @@ function bucket<T>(value: number, cuts: readonly number[], options: readonly T[]
 const through = (a: number, b: number, c: number, t: number) => (t < 0.5 ? lerp(a, b, t * 2) : lerp(b, c, t * 2 - 1));
 
 function legPairsFrom(v: number): number {
-  if (v < 0.1) return 0;
-  if (v < 0.3) return 1;
-  if (v < 0.72) return 2;
-  if (v < 0.9) return 3;
+  if (v < 0.13) return 0;
+  if (v < 0.4) return 1;
+  if (v < 0.67) return 2;
+  if (v < 0.87) return 3;
   return 4;
+}
+
+const HANDS: Hands[] = ['paws', 'claws', 'pincers'];
+
+/** Torso pitch from the posture gene; what it means depends on how many legs hold the body up. */
+function tiltFrom(posture: number, legPairs: number): number {
+  if (legPairs === 1) return lerp(0.2, 1.3, smoothstep(0.2, 0.8, posture));
+  if (legPairs === 0) return 1.2 * smoothstep(0.55, 0.92, posture);
+  return lerp(-0.14, 0.24, posture) / (legPairs >= 3 ? 2 : 1);
+}
+
+const hsl = (h: number, s: number, l: number): Hsl => ({ h: wrap01(h), s: Math.min(0.92, Math.max(0, s)), l: Math.min(0.92, Math.max(0.12, l)) });
+
+/**
+ * A palette with real value contrast. Hue is free, but saturation and lightness
+ * stay in a pleasant band, yellows are lifted (they look muddy when dark) and the
+ * pattern colour is always clearly lighter or darker than the body.
+ */
+/** Grass greens (0.24–0.40 on the wheel) get half their share of the hue gene, so fewer creatures vanish into the meadow. */
+function hueFrom(gene: number): number {
+  const start = 0.24;
+  const band = 0.16;
+  const share = 0.08;
+  const t = wrap01(gene - start);
+  return wrap01(start + (t < share ? (t / share) * band : band + ((t - share) / (1 - share)) * (1 - band)));
+}
+
+function paletteFrom(e: Expressed): BodyPlan['colour'] {
+  const hue = hueFrom(e.hue);
+  const yellow = Math.max(0, 1 - Math.abs(wrap01(hue - 0.15 + 0.5) - 0.5) / 0.12);
+  const bodyS = lerp(0.34, 0.8, e.saturation);
+  const bodyL = lerp(0.4, 0.68, e.lightness) + 0.08 * yellow;
+  const dark = bodyL > 0.52;
+  // Most accents are a darker or lighter neighbour; some are a split or full complement.
+  const a = e.accentShift;
+  const accentHue = a < 0.55 ? hue + lerp(-0.07, 0.07, a / 0.55) : a < 0.82 ? hue + lerp(0.14, 0.24, (a - 0.55) / 0.27) : hue + lerp(0.44, 0.56, (a - 0.82) / 0.18);
+  const contrast = a < 0.55 ? 0.24 : 0.2;
+  const accent = hsl(accentHue, bodyS + (a < 0.55 ? 0.08 : 0.15), dark ? bodyL - contrast : bodyL + contrast);
+  // The coat leans a little toward the accent and darkens the back, so bodies read as round.
+  const coat = hsl(hue + (accentHue - hue) * 0.15, bodyS + 0.06, bodyL - 0.1);
+  // Bellies are a warm cream tinted by the body.
+  const toWarm = wrap01(0.1 - hue + 0.5) - 0.5;
+  const belly = hsl(hue + toWarm * 0.45, 0.22 + bodyS * 0.3, Math.max(0.78, bodyL + 0.2));
+  // Eyes contrast with the body: warm bodies get cool eyes and the other way round.
+  const iris = hsl(hue + 0.5 + (a - 0.5) * 0.2, 0.72, 0.52);
+  return { body: hsl(hue, bodyS, bodyL), coat, accent, belly, iris };
 }
 
 function eyeCountFrom(v: number): number {
@@ -134,29 +195,29 @@ function eyeCountFrom(v: number): number {
  * allows a different set of gaits, so the same gene hops on a biped and
  * bounces on a blob.
  */
-export function gaitFor(gene: number, legPairs: number, legStyle: LegStyle, bodyLength: number): Gait {
+export function gaitFor(gene: number, legPairs: number, legStyle: LegStyle, bodyLength: number, round = false): Gait {
   let options: Gait[];
-  if (legStyle === 'tentacles') options = legPairs === 0 ? ['creep'] : ['creep', 'creep', 'waddle', 'hop'];
+  if (legStyle === 'tentacles') options = legPairs === 0 ? ['creep', 'float'] : ['creep', 'float', 'waddle', 'hop'];
   else if (legPairs === 0) options = bodyLength < 1.6 ? ['inch', 'bounce', 'bounce'] : ['inch', 'slither', 'slither', 'bounce'];
   else if (legPairs === 1) options = ['waddle', 'walk', 'prance', 'hop'];
   else if (legPairs === 2) options = legStyle === 'splayed' ? ['waddle', 'walk', 'scuttle', 'hop'] : ['waddle', 'walk', 'bound', 'prance', 'hop'];
   else options = ['walk', 'scuttle', 'scuttle'];
+  // Round, compact bodies (and shells) can tuck in and roll instead.
+  if (round && legStyle !== 'tentacles') options = [...options, 'roll'];
   // A blend of two uniform alleles piles up in the middle; undo that so every gait is equally likely.
   const even = gene < 0.5 ? 2 * gene * gene : 1 - 2 * (1 - gene) * (1 - gene);
   return quantize(even, options);
 }
 
 export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): BodyPlan {
-  const hue = e.hue;
-  // Accent is usually a near neighbour on the colour wheel, occasionally a bolder contrast.
-  const accentOffset = e.accentShift < 0.72 ? lerp(-0.08, 0.12, e.accentShift / 0.72) : lerp(0.26, 0.42, (e.accentShift - 0.72) / 0.28);
-  const bodyS = lerp(0.22, 0.72, e.saturation);
-  const bodyL = lerp(0.36, 0.74, e.lightness);
   const wingsOn = e.wings >= (RECESSIVE_THRESHOLD.wings ?? 0.6);
   const legPairs = legPairsFrom(e.legPairs);
   const legStyle = bucket(e.legStyle, [0.45, 0.66, 0.84], ['straight', 'digitigrade', 'splayed', 'tentacles'] as const);
   const bodyLength = through(0.8, 2, 4, e.bodyLength);
   const headStretch = lerp(-1, 1, e.headShape);
+  const girth = through(0.2, 0.52, 1, e.girth);
+  const shell = e.shell >= (RECESSIVE_THRESHOLD.shell ?? 0.62);
+  const round = shell || (bodyLength < 1.7 && girth > 0.55);
   // Geometric, so the middle of the gene is a size-1 creature.
   const size = 0.45 * Math.pow(2.1 / 0.45, e.size);
 
@@ -165,17 +226,21 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
     segments: Math.round(lerp(2, 9, e.segments)),
     lumps: through(0.04, 0.14, 0.6, e.lumps),
     bodyLength,
-    girth: through(0.2, 0.52, 1, e.girth),
+    girth,
     taper: lerp(-1, 1, e.taper),
     arch: through(-0.35, 0.15, 0.9, e.arch),
     bodyWidth: through(1.7, 0.95, 0.6, e.bodyShape),
     bodyTall: through(0.65, 1, 1.3, e.bodyShape),
-    shell: e.shell >= (RECESSIVE_THRESHOLD.shell ?? 0.62),
+    tilt: tiltFrom(e.posture, legPairs),
+    shell,
     legPairs,
     legLength: through(0.18, 0.9, 2.5, e.legLength),
     legGirth: through(0.035, 0.12, 0.26, e.legGirth),
     footSize: through(0.5, 1.15, 2.2, e.footSize),
     legStyle,
+    armPairs: e.arms < 0.6 ? 0 : e.arms < 0.9 ? 1 : 2,
+    armLength: through(0.35, 0.75, 1.5, e.armLength),
+    hands: bucket(e.hands, [0.52, 0.75], HANDS),
     neckLength: lerp(0.05, 2.6, Math.pow(e.neckLength, 1.4)),
     headSize: through(0.18, 0.47, 0.95, e.headSize),
     headStretch,
@@ -197,15 +262,11 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
     fluff: bucket(e.fluff, [0.46, 0.6, 0.73, 0.86], ['none', 'tufts', 'mane', 'frill', 'crest'] as const),
     wingSpan: wingsOn ? lerp(0.9, 4, (e.wings - 0.6) / 0.4) : 0,
     glow: e.glow >= (RECESSIVE_THRESHOLD.glow ?? 0.65),
-    colour: {
-      body: { h: hue, s: bodyS, l: bodyL },
-      accent: { h: wrap01(hue + accentOffset), s: Math.min(0.85, bodyS + 0.1), l: bodyL > 0.55 ? bodyL - 0.2 : bodyL + 0.16 },
-      belly: { h: wrap01(hue + 0.03), s: bodyS * 0.45, l: Math.min(0.9, bodyL + 0.2) },
-    },
+    colour: paletteFrom(e),
     pattern: quantize(e.pattern, PATTERNS),
     patternScale: lerp(0.8, 3.2, e.patternScale),
     finish: bucket(e.finish, [0.5, 0.63, 0.76, 0.88], ['matte', 'gradient', 'eyespots', 'iridescent', 'jelly'] as const),
-    gait: gaitFor(e.gait, legPairs, legStyle, bodyLength),
+    gait: gaitFor(e.gait, legPairs, legStyle, bodyLength, round),
     voice: { timbre: quantize(e.voice, TIMBRES), pitch: 430 * lerp(0.75, 1.45, e.voice) / Math.pow(size, 0.8) },
     quirk: quantize(e.quirk, QUIRKS),
     favourite: quantize(e.favourite, FOODS),
@@ -217,6 +278,9 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
 }
 
 export const planFromGenome = (genome: Genome) => planFromExpressed(express(genome), genome.sprouts);
+
+/** A biped standing tall, like a penguin or a person, rather than leaning forward like a bird. */
+export const isUpright = (p: BodyPlan) => p.legPairs === 1 && p.tilt > 0.9;
 
 // ---- Words -------------------------------------------------------------
 
@@ -231,6 +295,8 @@ export const GAIT_LABEL: Record<Gait, { verb: string; noun: string }> = {
   inch: { verb: 'inches along', noun: 'Inch' },
   bounce: { verb: 'bounces', noun: 'Bounce' },
   creep: { verb: 'creeps on its tentacles', noun: 'Creep' },
+  roll: { verb: 'tucks in and rolls', noun: 'Roll' },
+  float: { verb: 'floats along', noun: 'Float' },
 };
 
 export const QUIRK_LABEL: Record<Quirk, { status: string; blurb: string }> = {
@@ -257,6 +323,10 @@ export function describePlan(p: BodyPlan): string {
   if (p.twinHead) bits.push('two-headed');
   if (p.shell) bits.push('shelled');
   if (p.eyeStalks > 0) bits.push('stalk-eyed');
+  if (p.armPairs === 2) bits.push('four-armed');
+  else if (p.armPairs === 1) bits.push(p.hands === 'pincers' ? 'pincered' : p.hands === 'claws' ? 'taloned' : 'two-armed');
+  if (isUpright(p)) bits.push('upright');
+  if (p.legPairs === 0 && p.tilt > 0.6) bits.push('rearing');
   if (p.lumps > 0.35) bits.push('lumpy');
   if (p.snout > 0.75 && p.mouth === 'plain') bits.push('trunked');
   if (p.spikes > 1.1) bits.push('sail-backed');
@@ -287,7 +357,7 @@ export function describePlan(p: BodyPlan): string {
 
   const tentacled = p.legStyle === 'tentacles';
   const legs = p.legPairs === 0 ? (tentacled ? 'tentacled' : 'legless') : `${p.legPairs * 2}-${tentacled ? 'tentacled' : 'legged'}`;
-  const shape = p.legPairs === 0 ? (tentacled ? 'squiggle' : p.tailLength > 1.2 ? 'noodle' : 'blob') : p.legPairs === 1 ? 'strider' : 'critter';
+  const shape = p.legPairs === 0 ? (tentacled ? 'squiggle' : p.tailLength > 1.2 ? 'noodle' : 'blob') : p.legPairs === 1 ? (isUpright(p) ? 'biped' : 'strider') : 'critter';
   const adjectives = [...bits.slice(0, 2), legs].join(', ');
   const pattern = p.pattern === 'plain' ? '' : p.pattern === 'patches' ? 'patchy' : p.pattern === 'spots' ? 'spotted' : 'striped';
   const skin = [pattern, FINISH_WORD[p.finish]].filter(Boolean).join(', ');

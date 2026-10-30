@@ -74,7 +74,7 @@ hatching (from 2) remain good candidates for later.
 
 ## Genetics
 
-- **Genome = 48 named genes + a list of sprouts.** Each fixed gene is a pair of
+- **Genome = 52 named genes + a list of sprouts.** Each fixed gene is a pair of
   alleles (diploid), with each allele a float in `[0, 1]`. Definitions live in
   `src/genetics/genes.ts`. Sprouts are described below.
 - **Expression modes** decide how the two alleles combine:
@@ -124,20 +124,56 @@ mass with size³). Tiny creatures are also more charming.
 `genome → BodyPlan (phenotype) → Skeleton (anatomy) → meshes`
 
 - `phenotype.ts` turns expressed gene values into real units: segment count, leg
-  pairs (0–4), neck length, ear type, colours and so on.
-- `anatomy.ts` lays out the skeleton in metres: spine curve, radius profile and
-  cross-section, leg attach points, neck and head position, tail path, shell,
-  tentacle skirt and sprout sites. It is pure math, so the same layout drives both
-  the meshes and the ability scores.
-- `creature/build.ts` builds three.js meshes from the skeleton: custom tubes and
-  3D spline tubes for body, neck, tail, legs and sprouts, plus head, mouth, eyes,
-  ears, horns, fluff, fins or sail, shell, wings and tail tips. Patterns, finishes
-  (gradient, eye-spots), glow masks and iridescence are painted as vertex
-  attributes, so a few shared toon materials serve every creature.
-- `creature/motion.ts` animates the rig. Each gait returns body bob, roll, pitch,
-  spine waves and an abstract swing and lift per leg; leg-style adapters turn
-  those into joint rotations, so every gait works on every kind of leg. Spine
-  waves bend the torso mesh and carry legs, fins and sprouts with it.
+  pairs (0–4), arm pairs (0–2), posture, neck length, ear type, a palette and so on.
+- `anatomy.ts` lays out the skeleton in metres: a spine walked out from the tail
+  (arch plus posture tilt), radius profile and cross-section, back normals, leg and
+  arm attach points, neck and head position, tail path, shell, tentacle skirt and
+  sprout sites. It is pure math, so the same layout drives both the meshes and the
+  ability scores.
+- `creature/build.ts` turns the skeleton into bones, **skin** and **rigblocks**
+  (see "Bodies, after Spore" below). Patterns, finishes, glow masks and
+  iridescence are painted as vertex attributes, so a few shared materials serve
+  every creature.
+- `creature/motion.ts` animates the bones. Each gait returns body bob, roll, pitch,
+  spine waves, a roll-and-tuck amount and an abstract swing and lift per leg;
+  leg-style adapters turn those into joint rotations, so every gait works on every
+  kind of leg. Arms are posed from what the creature is doing (walking, foraging,
+  digging, waving, dancing). Tails are bone chains, so wags curve.
+
+### Bodies, after Spore
+
+Spore's creature creator is the inspiration, and three of its ideas carry over:
+
+1. **One continuous skin.** Spore wraps the spine and limbs in a single blobby
+   surface. Here every soft part is a *blob* (a tapered capsule or an ellipsoid);
+   blobs are joined with a smooth minimum of their distance fields, so a thigh
+   swells into a haunch and a neck flows into a head. The field is meshed with
+   surface nets, and each vertex is weighted to the bones of the blobs near it, so
+   the whole body is one `SkinnedMesh` that bends at every joint.
+2. **Rigblocks.** Eyes, ears, horns, beaks, fins, wings, shells and sprouts are
+   separate parts riding on the bones, like Spore's parts snapped onto the skin.
+3. **Layered paint.** Spore paints a base colour, a coat and a detail pattern.
+   Here: a base, a darker coat over the back, a pattern colour (round cellular
+   spots, giraffe patches with pale seams, or bands that taper toward the belly
+   and become rings on tails), a pale belly and darker "points" on hands and feet.
+   Paint follows the body: each skin vertex knows which part it is on, how far
+   along it, and whether it faces up or down, and colours cross-fade where parts meet.
+
+### Body plans
+
+Four legs walking was the most common creature, so body plans now branch more:
+
+- **Arms** (dominant, about 30% of founders): one or two pairs on the chest that
+  never touch the ground. Hands are paws, talons (dig) or pincers (rarest, they
+  snip). Arms raise *reach*, swing while walking, reach up when foraging, paddle
+  when digging, wave when happy and dance.
+- **Posture:** bipeds range from a forward lean (a bird or a T. rex) to upright
+  (a penguin or a person); four-legged backs slope a little either way; legless
+  bodies can rear up at the front like a cobra.
+- **Roll:** round, compact bodies and shelled creatures may tuck in and roll.
+- **Float:** tentacled creatures may hover and drift like jellyfish.
+- Leg pair cut points were rebalanced, so bipeds and six-legged creatures are
+  more common and quadrupeds are just under half.
 
 ## Abilities (form follows function)
 
@@ -148,8 +184,8 @@ creatures do zoomies, and strong fliers loop the loop.
 
 | Ability | Driven by | On the ranch |
 |---|---|---|
-| Reach | head height (legs + neck + arch) | Picks fruit; taller trees need taller creatures |
-| Dig | foot size, leg girth, snout, short legs | Digs roots in the soil patch |
+| Reach | head or hand height (legs + neck + arch + posture + arms) | Picks fruit; taller trees need taller creatures |
+| Dig | foot size, leg girth, snout, short legs, talons or pincers | Digs roots in the soil patch |
 | Swim | tail length, fins/spikes, short or no legs | Gathers shells in the pond |
 | Fly | wing span vs body mass | Flies to flowers, gathers nectar, makes them bloom |
 | Charm | big eyes, big head, tiny size, tufts, fluff, finishes | Visitors come a little more often |
@@ -187,7 +223,15 @@ creatures do zoomies, and strong fliers loop the loop.
 
 ## Art direction
 
-- Soft toon shading (three-step gradient), low-poly flat-shaded terrain.
+- The world: soft toon shading (three-step grey ramp), low-poly flat-shaded terrain.
+- Creatures: smooth blobby skin with their own soft ramp (violet-tinted shadows,
+  warm lights), a rim light so they stand out from the grass, a little gloss like a
+  vinyl toy, and a thin ink outline in a darker shade of the skin.
+- Colour: the hue gene is free, but saturation and lightness stay in a pleasant
+  band, yellows are lifted, pattern colours always have clear value contrast with
+  the body, and grass greens are half as common as other hues so creatures do not
+  vanish into the meadow. Eyes have a coloured iris that contrasts with the body,
+  a lid in the coat colour (heavier on sleepy creatures) and a smile.
 - Everything is procedural: no image or model assets. Anything that must be
   authored (palettes, name syllables, visitor themes) lives in code next to the
   system that uses it.

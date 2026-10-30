@@ -48,6 +48,7 @@ export const GENES = {
   taper: { label: 'Build', group: 'body', expression: 'blend', low: 'a heavy rear', high: 'a heavy chest', designable: true },
   arch: { label: 'Back arch', group: 'body', expression: 'blend', low: 'a sway back', high: 'an arched back', designable: true },
   bodyShape: { label: 'Body shape', group: 'body', expression: 'blend', low: 'a flatter body', high: 'a taller body', designable: true },
+  posture: { label: 'Posture', group: 'body', expression: 'blend', low: 'a lower stance', high: 'a more upright stance', designable: true },
   shell: { label: 'Shell', group: 'body', expression: 'recessive', low: 'a smaller shell', high: 'a bigger shell', designable: true, unlockedBy: 'shelled', founder: hiddenCarrier(0.2) },
   // Limbs
   legPairs: { label: 'Leg pairs', group: 'limbs', expression: 'blend', low: 'fewer legs', high: 'more legs', designable: true, founder: uniform },
@@ -55,6 +56,9 @@ export const GENES = {
   legGirth: { label: 'Leg girth', group: 'limbs', expression: 'blend', low: 'skinnier legs', high: 'sturdier legs', designable: true },
   footSize: { label: 'Foot size', group: 'limbs', expression: 'blend', low: 'dainty feet', high: 'big paws', designable: true },
   legStyle: { label: 'Leg style', group: 'limbs', expression: 'dominant', low: 'plainer legs', high: 'stranger legs', designable: true, founder: mostlyPlain(0.3, 0.22) },
+  arms: { label: 'Arms', group: 'limbs', expression: 'dominant', low: 'fewer arms', high: 'more arms', designable: true, unlockedBy: 'four-armed', lockedMax: 0.89, founder: mostlyPlain(0.36, 0.24) },
+  armLength: { label: 'Arm length', group: 'limbs', expression: 'blend', low: 'shorter arms', high: 'longer arms', designable: true },
+  hands: { label: 'Hands', group: 'limbs', expression: 'dominant', low: 'plainer hands', high: 'fancier hands', designable: true, unlockedBy: 'pincers', lockedMax: 0.74, founder: mostlyPlain(0.34, 0.24) },
   // Head
   neckLength: { label: 'Neck length', group: 'head', expression: 'blend', low: 'a shorter neck', high: 'a longer neck', designable: true, founder: uniform },
   headSize: { label: 'Head size', group: 'head', expression: 'blend', low: 'a smaller head', high: 'a bigger head', designable: true },

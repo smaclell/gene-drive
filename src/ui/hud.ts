@@ -268,6 +268,10 @@ export class Hud {
       chip('💫', QUIRK_LABEL[p.quirk].blurb, 'Signature quirk. Say hi to see it.'),
       chip(PRODUCE[p.favourite].icon, `loves ${PRODUCE[p.favourite].label.toLowerCase()}`, `Sometimes brings back extra ${PRODUCE[p.favourite].label.toLowerCase()}, and naps ${NAP_SPOT[p.favourite]}.`),
     );
+    if (p.armPairs) {
+      const hands = { paws: ['🖐️', 'paws'], claws: ['🦅', 'talons'], pincers: ['🦀', 'pincers'] }[p.hands];
+      box.append(chip(hands[0], `${p.armPairs * 2} arms, ${hands[1]}`, 'Arms reach higher fruit and wave hello. Talons and pincers help dig.'));
+    }
     if (p.sprouts.length) box.append(h('span', { class: 'trait wide', title: 'Sprouts: extra parts whose genes can copy themselves or vanish when bred.' }, `🌱 ${p.sprouts.map(describeSprout).join('; ')}`));
     return box;
   }

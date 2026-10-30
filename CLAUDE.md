@@ -33,17 +33,24 @@ on pull requests.
 ## Data flow
 
 ```
-Genome ─ 48 fixed genes (allele pairs) + sprouts (variable-length list)
+Genome ─ 52 fixed genes (allele pairs) + sprouts (variable-length list)
   │ express()                       genetics/genome.ts
   ▼
 BodyPlan ─ shape units, discrete styles, gait, voice, quirk   genetics/phenotype.ts
   │ buildSkeleton()                 genetics/anatomy.ts  (applies size → metres)
   ▼
 Skeleton ─ positions in metres ──► computeAbilities()   genetics/abilities.ts
-  │ buildCreature()                 creature/build.ts
+  │ buildCreature()                 creature/build.ts: bones + skin blobs + rigid parts
+  │ buildSkin()                     creature/skin.ts: blobs → one smooth SkinnedMesh
   ▼
-CreatureRig ─ meshes + pivots ──► animate() each frame  creature/motion.ts
+CreatureRig ─ bones + meshes ──► animate() each frame  creature/motion.ts
 ```
+
+Like Spore, a body is **skin plus rigblocks**. The skin (torso, neck, head,
+snout, tail, legs, arms, feet, hands) is a set of blobs melted together by a
+smooth-min distance field and meshed with surface nets into one `SkinnedMesh`,
+weighted to a bone hierarchy. Eyes, ears, horns, beaks, fins, wings, shells and
+sprouts are ordinary meshes parented to those bones.
 
 Meshes and abilities read the same skeleton, so what a creature looks like is
 what it can do. `sim/creature.ts` decides *what* a creature does; `motion.ts`
@@ -59,15 +66,18 @@ src/
     genome.ts       Genome type, express, breed (Mendel + mutation), save revival
     sprouts.ts      variable-length "sprout" genes: inherit, copy, lose, invent, describe
     phenotype.ts    BodyPlan: genes → shape units and styles; gaitFor(); describePlan()
-    anatomy.ts      Skeleton: spine, neck, head, tail path, legs, tentacles, shell, sprout sites
+    anatomy.ts      Skeleton: spine (with posture tilt), back normals, neck, head, tail path, legs, arms,
+                    tentacles, shell, sprout sites
     abilities.ts    reach/dig/swim/fly/charm/speed from plan + skeleton
     discoveries.ts  Journal entries (sections, tests); some unlock Lab sliders
     report.ts       hatch report, trait words, offspringOdds() for the breeding picker
     names.ts
   creature/
-    build.ts        skeleton → meshes. Helpers, then one builder per part, then buildCreature()
-    motion.ts       gaits, leg-style adapters, quirks/signature moves, wings, blinking
-    materials.ts    shared toon materials; shader adds glow + iridescent sheen
+    build.ts        skeleton → bones, skin blobs and rigid parts. Paint layers, helpers, one builder
+                    per part, then buildCreature() (meshes the skin, binds it, wires spine bending)
+    skin.ts         metaball skin: SDF blobs, smooth union, surface nets, bone weights, paint coords
+    motion.ts       gaits (incl. roll, float), leg-style adapters, arms, tail chains, quirks, wings, blinking
+    materials.ts    shared creature materials: tinted soft ramp, rim light, gloss, glow, sheen, ink outline
   world/       layout.ts (terrain height, landmarks), scenery.ts (meshes, fruit, flowers, burrows, tree shake), sky.ts
   sim/
     creature.ts     one creature: task machine (forage, dig, swim, fly, nap, quirk, zoom…), signature moves
@@ -96,9 +106,14 @@ src/
   `abilities.ts`. Add a word to `traitsOf()` in `report.ts` if it is a discrete trait (and to `DISCRETE` there).
   Old saves keep working because `reviveGenome` fills missing genes. Add a test.
 - **Add a body part:** write a `buildX(ctx, …)` function in `build.ts` beside the others and call it from
-  `buildCreature`. Every geometry goes through `paint()` (or sets `color`, `glow` and `sheen` itself), and
-  every mesh goes through `ctx.mesh()` so it is disposed. Parts that should move get a pivot `Group` and a
-  field on `CreatureRig`, which `motion.ts` animates.
+  `buildCreature`. Decide whether it is **skin** or a **rigblock**:
+  - Skin: create bones with `addBone()` (rest rotation 0 unless it is a base yaw), then add blobs with
+    `capsule()` / `blobEllipsoid()` in creature space (`at(bone, x, y, z)` converts). A blob's `chain` lists
+    the bones it bends with, `u0`/`u1` place it along them, `blend` is how softly it melts in, and `region`
+    picks the paint rules. Bones must exist before `buildSkin` runs at the end of `buildCreature`.
+  - Rigblock: build a geometry, `paint()` it (or set `color`, `glow` and `sheen` yourself), wrap it with
+    `ctx.mesh()` so it is disposed, and add it to a bone.
+  Parts that move get a field on `CreatureRig`, which `motion.ts` animates.
 - **Add a gait:** add it to `Gait` and `GAIT_LABEL` in `phenotype.ts`, list it in `gaitFor()` for the bodies
   that allow it, add a case to `gaitFrame()` and `GAIT_CADENCE` in `motion.ts`, speed in `GAIT_SPEED`
   (`abilities.ts`), and a Journal entry. Check it with `gallery.html?walk=1`.
@@ -118,7 +133,9 @@ src/
 - **Keep `core/` and `genetics/` free of three.js** so they stay fast to test in Node.
 - Colour, glow and sheen live in vertex attributes (`color`, `glow`, `sheen`); every creature
   geometry must have all three, because creatures share a few materials.
-- `tube()` in `build.ts` only handles paths in the xy plane; use `splineTube()` (3D) or `segment()` otherwise.
+- Skin build time is the main cost of making a creature (≈80 ms): grid spacing is chosen in
+  `buildCreature` from the creature's size. Blobs thinner than a cell are thickened, not dropped.
+- Arms never touch the ground (anatomy shortens or raises them), so they can swing, reach and wave freely.
 - Behaviour uses `Math.random`. Genetics takes an explicit `Rng` so it is reproducible.
 - Cozy tone: no failure states, no deaths, gentle copy. UK/Canadian spelling in
   player-facing text ("colour").
@@ -132,6 +149,8 @@ src/
 - The save lives in `localStorage` under `gene-drive-save-v1` and settings under
   `gene-drive-settings-v1`; "Start a new ranch" in Help resets the save only.
 - **Gallery** (`/gallery.html`): `?seed=&count=&theme=` picks creatures; `set=horns:0.95,legPairs:0.05`
+  (handy: `set=arms:0.95,legPairs:0.25,posture:0.9` upright four-armed bipeds;
+  `set=girth:0.9,bodyLength:0.15,gait:0.99` rollers; `set=legPairs:0.02,legStyle:0.95,gait:0.99` floaters)
   forces genes on all of them; `sprouts=3` adds random sprouts; `walk=1` (or W) walks them in place
   to check gaits. R rerolls.
 - Headless screenshots work with the preinstalled Playwright Chromium using

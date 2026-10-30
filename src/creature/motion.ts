@@ -1,7 +1,8 @@
+import type * as THREE from 'three';
 import { smoothstep } from '../core/rng';
 import type { Skeleton } from '../genetics/anatomy';
 import type { BodyPlan, Gait, Quirk } from '../genetics/phenotype';
-import type { CreatureRig, LegRig, Wave } from './build';
+import type { ArmRig, CreatureRig, LegRig, Wave } from './build';
 
 /**
  * Procedural animation for a creature rig. Pure presentation: the sim decides
@@ -10,6 +11,8 @@ import type { CreatureRig, LegRig, Wave } from './build';
  * Each gait is a small function returning a `GaitFrame` (body bob, roll,
  * spine waves and an abstract swing/lift per leg). Leg-style adapters turn
  * swing/lift into joint rotations, so any gait works on any kind of leg.
+ * Arms are free (they never carry weight), so they swing, reach, wave and snip
+ * according to what the creature is doing.
  */
 
 /** Special one-off motions: signature idles (quirks) and signature moves. */
@@ -51,7 +54,7 @@ export interface MotionState {
 
 /** Steps per stride. Higher is quicker and shorter. */
 export const GAIT_CADENCE: Record<Gait, number> = {
-  walk: 1, hop: 0.55, waddle: 1.8, prance: 0.9, scuttle: 2.2, bound: 0.75, slither: 0.8, inch: 0.7, bounce: 0.6, creep: 1.2,
+  walk: 1, hop: 0.55, waddle: 1.8, prance: 0.9, scuttle: 2.2, bound: 0.75, slither: 0.8, inch: 0.7, bounce: 0.6, creep: 1.2, roll: 0.9, float: 0.5,
 };
 
 /** Some gaits move in surges (inchworms pull, then rest). Multiplies speed. */
@@ -82,18 +85,24 @@ interface GaitFrame {
   head: number;
   tailLift: number;
   tailYaw: number;
+  /** 0 … 1: tucked into a ball and spinning forward (the roll gait). */
+  tuck: number;
+  /** Forward spin while rolling, radians. */
+  spin: number;
   leg: (leg: LegRig) => LegMove;
 }
 
 const diagonal = (leg: LegRig) => (leg.pair % 2 === 0 ? 0 : Math.PI) + (leg.side === 1 ? 0 : Math.PI);
 
 /** Body motion and leg swing for one gait at one instant. */
-function gaitFrame(gait: Gait, ph: number, m: number, plan: BodyPlan, skel: Skeleton): GaitFrame {
+function gaitFrame(gait: Gait, ph: number, m: number, plan: BodyPlan, skel: Skeleton, time: number): GaitFrame {
   const H = skel.bodyHeight;
   const L = skel.spine[skel.spine.length - 1].x - skel.spine[0].x;
   const k = skel.scale;
   const pairs = Math.max(1, plan.legPairs);
-  const f: GaitFrame = { bob: 0, pitch: 0, roll: 0, yaw: 0, squash: 1, stretch: 1, bendY: null, bendZ: null, head: 0, tailLift: 0, tailYaw: 0, leg: () => ({ swing: 0, lift: 0 }) };
+  const f: GaitFrame = {
+    bob: 0, pitch: 0, roll: 0, yaw: 0, squash: 1, stretch: 1, bendY: null, bendZ: null, head: 0, tailLift: 0, tailYaw: 0, tuck: 0, spin: 0, leg: () => ({ swing: 0, lift: 0 }),
+  };
   switch (gait) {
     case 'walk':
       f.bob = Math.abs(Math.sin(ph)) * 0.05 * H * m;
@@ -184,8 +193,75 @@ function gaitFrame(gait: Gait, ph: number, m: number, plan: BodyPlan, skel: Skel
         return { swing: Math.sin(p) * 0.4 * m, lift: Math.max(0, Math.cos(p)) * 0.6 * m };
       };
       break;
+    case 'roll': {
+      // Tuck everything in and tumble forward like a pill bug; unroll on stopping.
+      f.tuck = smoothstep(0.2, 0.6, m);
+      f.spin = -wrapPi(ph) * f.tuck;
+      f.head = -0.5 * f.tuck;
+      f.tailLift = 0.6 * f.tuck;
+      if (f.tuck < 0.5) {
+        f.leg = (leg) => {
+          const p = ph + diagonal(leg);
+          return { swing: Math.sin(p) * 0.4 * m, lift: Math.max(0, Math.cos(p)) * 0.5 * m };
+        };
+      }
+      break;
+    }
+    case 'float': {
+      // Hover and pulse like a jellyfish, tentacles trailing behind; even standing still it drifts.
+      const pulse = Math.sin(ph * 1.2 + time * 1.4);
+      f.bob = (0.3 * k + 0.12 * H) + pulse * 0.06 * (H + k);
+      f.squash = 1 + pulse * 0.07;
+      f.pitch = -0.08 * m;
+      f.leg = () => ({ swing: -0.45 * m - pulse * 0.15, lift: 0.35 + 0.3 * Math.max(0, -pulse) });
+      break;
+    }
   }
   return f;
+}
+
+/** Wrap an angle into (-π, π]. */
+function wrapPi(a: number): number {
+  return a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));
+}
+
+/** What the arms are busy with this frame. Each returns shoulder swing, shoulder spread, elbow bend. */
+interface ArmPose {
+  swing: number;
+  spread: number;
+  bend: number;
+}
+
+function armPose(arm: ArmRig, s: MotionState, ph: number, m: number, plan: BodyPlan): ArmPose {
+  const { time, pose, action } = s;
+  const side = arm.side;
+  const offset = arm.pair * 0.6 + (side === 1 ? 0 : Math.PI);
+  // Swing opposite the legs when walking, a gentle sway when standing.
+  let p: ArmPose = {
+    swing: -Math.sin(ph + offset) * (plan.legPairs === 1 ? 0.55 : 0.3) * m + Math.sin(time * 1.3 + offset) * 0.06,
+    spread: 0.05,
+    bend: 0.15 + Math.max(0, Math.cos(ph + offset)) * 0.3 * m,
+  };
+  if (s.flying || pose.fold > 0.5) p = { swing: -0.35, spread: 0, bend: 1.3 };
+  else if (s.foraging) p = { swing: 1.9 + Math.sin(time * 6 + offset) * 0.25, spread: 0.1, bend: -0.2 + Math.sin(time * 6 + offset) * 0.3 };
+  else if (s.digging) p = { swing: 0.5 + Math.sin(time * 12 + offset) * 0.6, spread: 0.15, bend: 0.6 };
+  else if (s.happy && side === 1 && arm.pair === 0) p = { swing: 2.3, spread: 0.35, bend: 0.4 + Math.sin(time * 10) * 0.5 };
+  if (action) {
+    const env = Math.sin(Math.PI * Math.min(1, action.t));
+    const blend = (to: ArmPose) => {
+      p = { swing: p.swing + (to.swing - p.swing) * env, spread: p.spread + (to.spread - p.spread) * env, bend: p.bend + (to.bend - p.bend) * env };
+    };
+    switch (action.kind) {
+      case 'dance': blend({ swing: 2.4 + Math.sin(time * 8 + offset) * 0.4, spread: 0.5, bend: 0.3 + Math.sin(time * 8) * 0.4 }); break;
+      case 'stretch': blend({ swing: 2.7, spread: 0.2, bend: -0.1 }); break;
+      case 'sing': blend({ swing: 1.2, spread: 0.9, bend: 0.1 }); break;
+      case 'twirl': blend({ swing: 0.8, spread: 1.3, bend: 0 }); break;
+      case 'shake': blend({ swing: 2.5, spread: 0.3, bend: 0.2 + Math.sin(time * 18) * 0.3 }); break;
+      case 'zoom': blend({ swing: -0.6, spread: 0, bend: 0.8 }); break;
+      default: break;
+    }
+  }
+  return p;
 }
 
 /** Turn an abstract swing/lift into joint rotations for each leg style. */
@@ -243,7 +319,7 @@ export function animate(rig: CreatureRig, plan: BodyPlan, skel: Skeleton, s: Mot
   // Swimming paddles on a clock; flying holds the legs still.
   const phase = s.swimming ? time * 6 : s.phase;
   const m = s.flying ? 0 : s.swimming ? 0.6 : s.moving;
-  const g = gaitFrame(s.swimming && plan.gait !== 'slither' ? 'walk' : plan.gait, phase, m, plan, skel);
+  const g = gaitFrame(s.swimming && plan.gait !== 'slither' ? 'walk' : plan.gait, phase, m, plan, skel, time);
 
   let bob = g.bob;
   let pitch = pose.pitch + g.pitch;
@@ -310,8 +386,13 @@ export function animate(rig: CreatureRig, plan: BodyPlan, skel: Skeleton, s: Mot
   }
 
   const digJitter = s.digging ? Math.sin(time * 30) * 0.03 : 0;
-  rig.body.position.set(digJitter, -pose.drop + bob, 0);
-  rig.body.rotation.set(roll, yaw, pitch + (s.flying ? Math.sin(time * 2) * 0.04 : 0));
+  // Rolling: sink to a ball resting on the ground and spin about its middle.
+  const tuck = g.tuck;
+  const fold = Math.max(pose.fold, tuck);
+  const spinX = H * Math.sin(g.spin);
+  const spinY = H * (1 - Math.cos(g.spin));
+  rig.body.position.set(digJitter + spinX, -pose.drop - skel.sitDrop * tuck * 0.9 + bob + spinY, 0);
+  rig.body.rotation.set(roll, yaw, pitch + g.spin + (s.flying ? Math.sin(time * 2) * 0.04 : 0));
   const breathe = 1 + Math.sin(time * 2.2) * 0.015;
   rig.body.scale.set(g.stretch, squash * breathe, 1 / Math.sqrt(squash));
 
@@ -327,10 +408,16 @@ export function animate(rig: CreatureRig, plan: BodyPlan, skel: Skeleton, s: Mot
   });
   for (const n of rig.necks) n.rotation.y = n.userData.baseYaw + slopes.headYaw * 0.4;
 
+  // Tails are a chain of bones: each one follows the last a moment later, so wags curve.
   const wag = tailWag(plan, time, phase, tailBoost > 0);
   for (const t of rig.tails) {
-    t.rotation.y = t.userData.baseYaw + wag.yaw + g.tailYaw + slopes.tailYaw;
-    t.rotation.z = wag.lift + g.tailLift + slopes.tailPitch + (action?.kind === 'stretch' ? 0.5 : 0);
+    t.rotation.y = t.userData.baseYaw + wag.yaw * 0.6 + g.tailYaw + slopes.tailYaw;
+    t.rotation.z = wag.lift + g.tailLift * 0.6 + slopes.tailPitch + (action?.kind === 'stretch' ? 0.5 : 0);
+    (t.userData.chain as THREE.Object3D[] | undefined)?.forEach((b, i) => {
+      const late = tailWag(plan, time - 0.12 * (i + 1), phase - 0.4 * (i + 1), tailBoost > 0);
+      b.rotation.y = late.yaw * 0.45;
+      b.rotation.z = late.lift * 0.4 + g.tailLift * 0.4;
+    });
   }
   for (const t of rig.trunks) {
     t.rotation.z = Math.sin(time * 1.1) * 0.12 + (s.foraging ? 0.6 : 0) + (action?.kind === 'sing' ? 0.9 : 0);
@@ -342,13 +429,26 @@ export function animate(rig: CreatureRig, plan: BodyPlan, skel: Skeleton, s: Mot
     sp.rotation.z = Math.cos(time * 1.3 + sp.userData.phase) * sway * 0.7 - bob * 0.3;
   }
 
+  for (const arm of rig.arms) {
+    const a = armPose(arm, s, phase, m, plan);
+    const tucked = Math.max(tuck, legKick);
+    arm.shoulder.rotation.set(-arm.side * a.spread * (1 - tucked), 0, a.swing * (1 - tucked) - 0.2 * tucked);
+    arm.elbow.rotation.z = a.bend * (1 - tucked) + 1.4 * tucked;
+    if (arm.snip) {
+      // Pincers open and close now and then, and busily when there is work to do.
+      const busy = s.foraging || s.digging || s.happy || !!action;
+      const open = busy ? 0.5 + 0.5 * Math.sin(time * 9 + arm.side) : Math.pow(Math.max(0, Math.sin(time * 0.9 + arm.side * 2)), 12);
+      arm.snip.rotation.z = -0.55 * open;
+    }
+  }
+
   const frontHalf = Math.max(1, plan.legPairs) / 2;
   for (const leg of rig.legs) {
     let move = g.leg(leg);
     if (s.flying) move = { swing: -0.35 + Math.sin(time * 3 + leg.pair) * 0.08, lift: 0.5 };
     if (legKick) move = { swing: Math.sin(time * 10 + leg.pair + leg.side) * 0.6 * legKick, lift: 0.4 * legKick };
     if (action?.kind === 'stretch') move = { swing: (leg.pair < frontHalf ? -0.5 : 0.8) * Math.sin(Math.PI * action.t), lift: 0 };
-    poseLeg(leg, { swing: move.swing * (1 - pose.fold), lift: move.lift * (1 - pose.fold) }, pose.fold, leg.pair < frontHalf, time, phase * 1.5 + time * 0.6);
+    poseLeg(leg, { swing: move.swing * (1 - fold), lift: move.lift * (1 - fold) }, fold, leg.pair < frontHalf, time, phase * 1.5 + time * 0.6);
   }
 
   // Wings fold back along the body at rest and spread to flap.

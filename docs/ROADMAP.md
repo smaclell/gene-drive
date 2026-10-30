@@ -58,13 +58,34 @@ See [`DESIGN.md`](DESIGN.md) for the vision and reasoning.
 - [x] Lab: partly locked sliders, sprout tools, gait preview
 - [x] Gallery: `set=`, `sprouts=` and `walk=1` for tuning
 
+## ✅ Milestone 3: awesome creatures (done)
+
+**Spore-style bodies**
+- [x] Metaball skin: torso, neck, head, snout, tail, legs, feet, arms and hands are blobs melted together
+      (smooth-min distance field, surface nets) into one `SkinnedMesh` bound to bones; joints never show
+- [x] Rigblocks (eyes, ears, horns, beaks, fins, wings, shells, sprouts) ride on bones
+- [x] Bones everywhere: spine bones for bending, three-bone tail chains (wags curve), neck and head bones
+- [x] Layered paint: base, coat over the back, detail pattern, pale belly, darker hands and feet, cross-faded at joins;
+      cellular spots and giraffe patches; stripes that taper toward the belly and ring the tail
+- [x] Palettes with real value contrast, lifted yellows, fewer grass-green creatures, contrasting irises
+- [x] Look: soft violet-tinted light ramp, rim light, gloss, ink outline; eyes with irises, lids and a smile
+
+**More kinds of body**
+- [x] Arms (0–2 pairs) with paws, talons or pincers; they swing, reach for fruit, dig, wave, dance and snip
+- [x] Posture gene: leaning or upright bipeds, sloped backs, rearing legless bodies
+- [x] Roll gait (round bodies and shells tuck in and tumble) and float gait (tentacled drifters)
+- [x] Rebalanced leg pairs: fewer quadrupeds, more bipeds and six-legged creatures
+- [x] Journal: Arms, Four arms, Talons, Pincers, Upright, Rearing, Roller, Floater; Lab locks four arms and pincers
+- [x] Visitors: Reef carries pincers, Burrow carries talons, Sky visitors stand upright, Dune visitors roll
+
 ## 🎯 Next (pending a choice)
 
-1. **Smoother bodies:** skin the torso, neck and tail as one spline mesh so joints never show.
-2. **Sprouts that do things:** sprouts that grab fruit, eye-sprouts that spot visitors early, leaf sprouts that photosynthesise.
-3. **Lab sprout editor:** pick a sprout and drag its site, curl and length, rather than reroll.
-4. **Family tree viewer**, so lineages of odd traits are easy to follow.
-5. **Produce recipes:** treats that raise the sprout or mutation rate for one picnic.
+1. **Sprouts that do things:** sprouts that grab fruit, eye-sprouts that spot visitors early, leaf sprouts that photosynthesise.
+2. **Lab sprout editor:** pick a sprout and drag its site, curl and length, rather than reroll.
+3. **Family tree viewer**, so lineages of odd traits are easy to follow.
+4. **Produce recipes:** treats that raise the sprout or mutation rate for one picnic.
+5. **Hands that hold things:** carry fruit back, hug friends, or (pincers) trim flowers.
+6. **Skin performance:** build the skin in a worker or cache it, so big herds load instantly.
 
 ## 🌱 Later ideas
 
@@ -79,6 +100,12 @@ See [`DESIGN.md`](DESIGN.md) for the vision and reasoning.
 
 ## Known rough edges
 
+- Building a creature's skin takes about 80 ms, so a full herd of 30 adds a couple of seconds to loading
+  and the Lab redraws a little slowly while dragging.
+- Patterns are painted per vertex, so very small spots or thin stripes are soft rather than crisp.
+- Arms can pass through the body or each other in some poses (no collision).
+- The ink outline and rim light only cover the skin, not rigblocks such as horns and ears.
+- Changing leg pair cut points and palettes changed how some existing saved creatures look (genomes are unchanged).
 - Creatures walk through trees and the cottage (no obstacle avoidance yet).
 - Legs do not plant on slopes (no IK); on hills, feet can float or sink a little.
 - Very large or extreme creatures can overlap neighbours; personal space uses a rough radius.

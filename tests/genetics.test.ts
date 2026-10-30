@@ -6,8 +6,8 @@ import { DISCOVERIES } from '../src/genetics/discoveries';
 import { GENES, GENE_IDS } from '../src/genetics/genes';
 import { breed, express, expressGene, homozygousGenome, randomGenome, reviveGenome, type Genome } from '../src/genetics/genome';
 import { childName, randomName } from '../src/genetics/names';
-import { GAIT_LABEL, describePlan, gaitFor, planFromExpressed, planFromGenome, type Gait } from '../src/genetics/phenotype';
-import { hatchReport, offspringOdds } from '../src/genetics/report';
+import { GAIT_LABEL, describePlan, gaitFor, isUpright, planFromExpressed, planFromGenome, type Gait } from '../src/genetics/phenotype';
+import { hatchReport, offspringOdds, traitsOf } from '../src/genetics/report';
 import { MAX_SPROUTS, describeSprout, inheritSprouts, randomSprout, reviveSprouts } from '../src/genetics/sprouts';
 import { VISITOR_THEMES, themeBias } from '../src/sim/visitors';
 
@@ -176,7 +176,8 @@ describe('milestone 2 bodies', () => {
   it('only picks gaits the body allows', () => {
     for (let g = 0; g <= 1; g += 0.05) {
       expect(['inch', 'slither', 'bounce']).toContain(gaitFor(g, 0, 'straight', 3));
-      expect(gaitFor(g, 0, 'tentacles', 2)).toBe('creep');
+      expect(['creep', 'float']).toContain(gaitFor(g, 0, 'tentacles', 2));
+      expect(['waddle', 'walk', 'prance', 'hop', 'roll']).toContain(gaitFor(g, 1, 'straight', 1.2, true));
       expect(['waddle', 'walk', 'prance', 'hop']).toContain(gaitFor(g, 1, 'straight', 2));
       expect(['walk', 'scuttle']).toContain(gaitFor(g, 4, 'splayed', 2));
     }
@@ -310,6 +311,65 @@ describe('sprouts', () => {
         expect(Math.hypot(l.dir.x, l.dir.y, l.dir.z)).toBeCloseTo(1);
       }
       expect(describeSprout(plan.sprouts[0])).toMatch(/ on its /);
+    }
+  });
+});
+
+describe('milestone 3 bodies', () => {
+  const base = () => express(randomGenome(mulberry32(70)));
+
+  it('hangs arms from the chest with hands clear of the ground', () => {
+    const rng = mulberry32(71);
+    for (let i = 0; i < 200; i++) {
+      const e = { ...express(randomGenome(rng)), arms: 0.95 };
+      const p = planFromExpressed(e);
+      const s = buildSkeleton(p);
+      expect(p.armPairs).toBe(2);
+      expect(s.arms).toHaveLength(4);
+      for (const a of s.arms) {
+        expect(Math.hypot(a.dir.x, a.dir.y, a.dir.z)).toBeCloseTo(1);
+        expect(a.shoulder.y + a.dir.y * a.length).toBeGreaterThan(0);
+      }
+      expect(traitsOf(p).arms).toMatch(/^4 arms with /);
+    }
+  });
+
+  it('lets arms reach fruit the head cannot', () => {
+    const e = { ...base(), legPairs: 0.3, posture: 0.9, neckLength: 0.1, armLength: 1 };
+    const without = buildSkeleton(planFromExpressed({ ...e, arms: 0 }));
+    const withArms = buildSkeleton(planFromExpressed({ ...e, arms: 0.7 }));
+    expect(withArms.reach).toBeGreaterThan(without.reach);
+  });
+
+  it('stands bipeds up with the posture gene', () => {
+    const e = { ...base(), legPairs: 0.3, arch: 0.5 };
+    const low = planFromExpressed({ ...e, posture: 0.1 });
+    const tall = planFromExpressed({ ...e, posture: 0.95 });
+    expect(isUpright(tall)).toBe(true);
+    expect(isUpright(low)).toBe(false);
+    const s = buildSkeleton(tall);
+    const chest = s.spine[s.spine.length - 1];
+    expect(chest.y - s.spine[0].y).toBeGreaterThan(Math.abs(chest.x - s.spine[0].x));
+    // Hips stay under the body and the underside clears the grass.
+    for (const leg of s.legs) expect(leg.length).toBeGreaterThan(0);
+    expect(s.sitDrop).toBeGreaterThanOrEqual(0);
+    expect(describePlan(tall)).toContain('upright');
+  });
+
+  it('only lets round bodies and shells roll', () => {
+    for (let g = 0; g <= 1; g += 0.05) {
+      expect(gaitFor(g, 2, 'straight', 3, false)).not.toBe('roll');
+      expect(['creep', 'float']).toContain(gaitFor(g, 0, 'tentacles', 1, true));
+    }
+    expect(gaitFor(0.99, 2, 'straight', 1, true)).toBe('roll');
+  });
+
+  it('keeps pattern colours clearly lighter or darker than the body', () => {
+    const rng = mulberry32(72);
+    for (let i = 0; i < 300; i++) {
+      const { body, accent, belly } = planFromGenome(randomGenome(rng)).colour;
+      expect(Math.abs(body.l - accent.l)).toBeGreaterThan(0.12);
+      expect(belly.l).toBeGreaterThan(body.l);
     }
   });
 });

@@ -68,3 +68,38 @@ export function cells2(x: number, y: number, seed = 0): { f1: number; f2: number
   }
   return { f1, f2 };
 }
+
+/**
+ * 3D cellular (Worley) noise. `f1`/`f2` are distances to the nearest and second-nearest
+ * jittered points; `id` is a stable random number for the nearest cell, so each spot
+ * or patch can have its own size or shade.
+ */
+export function cells3(x: number, y: number, z: number, seed = 0): { f1: number; f2: number; id: number } {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const zi = Math.floor(z);
+  let f1 = Infinity;
+  let f2 = Infinity;
+  let id = 0;
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const cx = xi + dx;
+        const cy = yi + dy;
+        const cz = zi + dz;
+        const px = cx + hash3(cx, cy, cz, seed);
+        const py = cy + hash3(cx, cy, cz, seed + 1);
+        const pz = cz + hash3(cx, cy, cz, seed + 2);
+        const d = (x - px) * (x - px) + (y - py) * (y - py) + (z - pz) * (z - pz);
+        if (d < f1) {
+          f2 = f1;
+          f1 = d;
+          id = hash3(cx, cy, cz, seed + 3);
+        } else if (d < f2) {
+          f2 = d;
+        }
+      }
+    }
+  }
+  return { f1: Math.sqrt(f1), f2: Math.sqrt(f2), id };
+}

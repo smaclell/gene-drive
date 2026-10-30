@@ -712,7 +712,7 @@ export class Creature {
       target.pitch = -0.2;
       target.headPitch = -0.55;
     } else if (acting && kind === 'nap') {
-      target.drop = p.legPairs > 0 ? s.bodyHeight - p.girth * s.scale * 0.8 : 0.05;
+      target.drop = s.sitDrop;
       target.headPitch = -0.25;
       target.eyes = 0.08;
       target.fold = 1;

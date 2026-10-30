@@ -228,8 +228,10 @@ export class Lab {
     restRig(this.rig, plan, skel);
     this.rig.root.position.x = -(skel.head.center.x + skel.tail[skel.tail.length - 1].x) / 2;
     this.turntable.add(this.rig.root);
+    // Fit the whole creature across the preview, which is often taller than it is wide.
     const size = Math.max(skel.length, skel.reach + 0.5);
-    this.camera.position.set(0, size * 0.55 + 0.6, size * 1.55 + 2);
+    const fit = size / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * Math.min(1, this.camera.aspect));
+    this.camera.position.set(0, size * 0.5 + 0.6, fit * 1.05 + 1.5);
     this.camera.lookAt(0, skel.reach * 0.45, 0);
 
     clear(this.info);

@@ -1,4 +1,4 @@
-import { clamp01, lerp } from '../core/rng';
+import { clamp, clamp01, lerp, smoothstep } from '../core/rng';
 import type { BodyPlan } from './phenotype';
 import type { Sprout } from './sprouts';
 
@@ -27,6 +27,17 @@ export interface LegLayout {
   pair: number;
 }
 
+/** An arm hangs from the chest. Arms never reach the ground, so they are free to wave, reach and grab. */
+export interface ArmLayout {
+  shoulder: V3;
+  /** Unit vector the arm hangs along at rest. */
+  dir: V3;
+  length: number;
+  radius: number;
+  side: 1 | -1;
+  pair: number;
+}
+
 /** Where one sprout grows. Build attaches it to `part` so it moves with that part. */
 export interface SproutLayout {
   sprout: Sprout;
@@ -43,8 +54,10 @@ export interface Skeleton {
   scale: number;
   spine: V3[];
   radii: number[];
-  /** Top of the back (body or shell) above each spine sample, for fins and fluff. */
-  backTop: number[];
+  /** Unit vector out of the back at each spine sample: perpendicular to the spine, in the xy plane. */
+  up: V3[];
+  /** Top of the back (body or shell) at each spine sample, for fins and fluff. */
+  back: V3[];
   /** Cross-section width and height relative to the radius. */
   widthScale: number;
   heightScale: number;
@@ -56,17 +69,21 @@ export interface Skeleton {
   legs: LegLayout[];
   /** Legless creatures with tentacle genes walk on these instead. */
   tentacles: LegLayout[];
-  spikes: { at: V3; height: number }[];
-  shell: { center: V3; rx: number; ry: number; rz: number } | null;
+  arms: ArmLayout[];
+  spikes: { at: V3; dir: V3; height: number }[];
+  /** A dome over the middle of the back; `tilt` follows the spine there. */
+  shell: { center: V3; rx: number; ry: number; rz: number; tilt: number } | null;
   sprouts: SproutLayout[];
   wingRoot: V3 | null;
-  /** Highest point the mouth can reach when stretching, in metres. */
+  /** Highest point the mouth (or a hand) can reach when stretching, in metres. */
   reach: number;
   mass: number;
   /** Nose-to-tail length, used for spacing and camera framing. */
   length: number;
-  /** Height of the body's centre line above the ground. */
+  /** Height of the body's centre line above the ground, at the middle of the spine. */
   bodyHeight: number;
+  /** How far the body can drop to sit or nap with its underside on the ground. */
+  sitDrop: number;
 }
 
 export const SPINE_SAMPLES = 40;
@@ -117,45 +134,91 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   const G = p.girth * k;
   const w = p.bodyWidth;
   const hs = p.bodyTall;
+  const N = SPINE_SAMPLES;
   const hasLegs = p.legPairs > 0;
   const octopus = !hasLegs && p.legStyle === 'tentacles';
   const tentacleLength = (0.3 + p.legLength * 0.4) * k;
-  const bodyHeight = hasLegs ? p.legLength * k + G * 0.7 * hs : G * 0.82 * hs + (octopus ? tentacleLength * 0.75 : 0);
 
-  const spineY = (t: number) => bodyHeight + p.arch * Math.sin(Math.PI * t) * L * 0.22;
-  const spineAt = (t: number) => v((t - 0.5) * L, spineY(t));
-  const radiusAt = (t: number) => bodyRadiusAt(p, t);
-
+  // The spine is walked out from the tail end. Its angle is the arch's slope plus the
+  // posture tilt: the whole body pitches up on legs, only the front rears up when legless.
+  const archSlope = (t: number) => Math.atan(p.arch * 0.22 * Math.PI * Math.cos(Math.PI * t));
+  const tiltAt = (t: number) => (hasLegs ? p.tilt : p.tilt * smoothstep(0.42, 0.95, t));
+  const angles: number[] = [];
   const spine: V3[] = [];
-  const radii: number[] = [];
-  for (let i = 0; i < SPINE_SAMPLES; i++) {
-    const t = i / (SPINE_SAMPLES - 1);
-    spine.push(spineAt(t));
-    radii.push(radiusAt(t));
+  const step = L / (N - 1);
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    angles.push(archSlope(t) + tiltAt(t));
+    if (i === 0) spine.push(v(0, 0));
+    else {
+      const a = archSlope((i - 0.5) / (N - 1)) + tiltAt((i - 0.5) / (N - 1));
+      spine.push(v(spine[i - 1].x + Math.cos(a) * step, spine[i - 1].y + Math.sin(a) * step));
+    }
+  }
+  const radii = spine.map((_, i) => bodyRadiusAt(p, i / (N - 1)));
+  const up = angles.map((a) => v(-Math.sin(a), Math.cos(a)));
+  const idx = (t: number) => Math.round(clamp01(t) * (N - 1));
+
+  // Upright bipeds balance over hips low on the body; everyone else turns about the middle.
+  const uprightness = p.legPairs === 1 ? smoothstep(0.3, 1.2, p.tilt) : 0;
+  const pivotT = lerp(0.5, 0.25, uprightness);
+  const pivot = { ...spine[idx(pivotT)] };
+  const startY = hasLegs ? p.legLength * k + G * 0.7 * hs : 0;
+  for (const s of spine) {
+    s.x -= pivot.x;
+    s.y += startY - pivot.y;
   }
 
-  // Shell: a dome over the middle of the back.
+  const legTs = p.legPairs === 1 ? [pivotT]
+    : Array.from({ length: p.legPairs }, (_, i) => lerp(0.22, p.armPairs > 0 ? 0.68 : 0.8, i / Math.max(1, p.legPairs - 1)));
+  const hipOut = p.legStyle === 'splayed' ? 0.85 : 0.62;
+  const hipAt = (t: number, sink: number) => {
+    const i = idx(t);
+    const r = radii[i] * hs * sink;
+    return v(spine[i].x - up[i].x * r, spine[i].y - up[i].y * r);
+  };
+
+  // Lift the body so its underside clears the grass and every hip has some leg below it.
+  const bottoms = spine.map((s, i) => s.y - radii[i] * hs * Math.abs(up[i].y));
+  let lift = Math.max(0, (hasLegs ? 0.06 * k : 0.01 * k) - Math.min(...bottoms));
+  if (hasLegs) for (const t of legTs) lift = Math.max(lift, 0.3 * p.legLength * k + 0.04 * k - hipAt(t, 0.5).y);
+  if (octopus) lift += tentacleLength * 0.75;
+  for (const s of spine) s.y += lift;
+  const minBottom = Math.min(...bottoms) + lift;
+
+  const spineAt = (t: number) => spine[idx(t)];
+  const radiusAt = (t: number) => radii[idx(t)];
+  const upAt = (t: number) => up[idx(t)];
+
+  // Shell: a dome over the middle of the back, tipped to follow the spine.
   let shell: Skeleton['shell'] = null;
   if (p.shell) {
     const mid = spineAt(0.5);
     const r = radiusAt(0.5);
-    shell = { center: v(mid.x, mid.y - r * hs * 0.2), rx: L * 0.42, ry: r * hs * 1.35, rz: r * w * 1.22 };
+    const n = upAt(0.5);
+    shell = { center: v(mid.x - n.x * r * hs * 0.2, mid.y - n.y * r * hs * 0.2), rx: L * 0.42, ry: r * hs * 1.35, rz: r * w * 1.22, tilt: angles[idx(0.5)] };
   }
-  const backTop = spine.map((s, i) => {
-    let top = s.y + radii[i] * hs;
+  const back = spine.map((s, i) => {
+    let top = radii[i] * hs;
     if (shell) {
-      const dx = (s.x - shell.center.x) / shell.rx;
-      if (Math.abs(dx) < 1) top = Math.max(top, shell.center.y + shell.ry * Math.sqrt(1 - dx * dx));
+      const c = Math.cos(shell.tilt);
+      const sn = Math.sin(shell.tilt);
+      const along = ((s.x - shell.center.x) * c + (s.y - shell.center.y) * sn) / shell.rx;
+      if (Math.abs(along) < 1) {
+        const across = -(s.x - shell.center.x) * sn + (s.y - shell.center.y) * c;
+        top = Math.max(top, shell.ry * Math.sqrt(1 - along * along) - across);
+      }
     }
-    return top;
+    return v(s.x + up[i].x * top, s.y + up[i].y * top);
   });
-  const backAt = (t: number) => backTop[Math.round(t * (SPINE_SAMPLES - 1))];
+  const backAt = (t: number) => back[idx(t)];
 
-  // Neck: rises more steeply the longer it is (giraffe vs. dachshund).
+  // Neck: rises more steeply the longer it is (giraffe vs. dachshund), and never leans
+  // further forward than the chest it grows from, so upright bodies carry their heads on top.
   const shoulderT = 0.86;
   const shoulder = spineAt(shoulderT);
   const neckLen = (p.neckLength + p.girth * 0.45) * k;
-  const angle = lerp(0.15, 1.2, clamp01(p.neckLength / 2));
+  const angle = Math.max(lerp(0.15, 1.2, clamp01(p.neckLength / 2)), angles[idx(shoulderT)] * 0.8);
   const dir = v(Math.cos(angle), Math.sin(angle));
   const neckEnd = v(shoulder.x + dir.x * neckLen, shoulder.y + dir.y * neckLen);
   const neckMid = v(shoulder.x + dir.x * neckLen * 0.5 - dir.y * neckLen * 0.06, shoulder.y + dir.y * neckLen * 0.5 + dir.x * neckLen * 0.08);
@@ -168,7 +231,8 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   const head = { center: v(neckEnd.x + headSize * (0.35 + Math.max(0, p.headStretch) * 0.15), neckEnd.y + headSize * 0.1), radius: headSize };
 
   // Tail: lifts, then droops (or whips, curls…). Never dips below the grass.
-  const tailBase = spineAt(0.07);
+  const tb = spineAt(0.07);
+  const tailBase = v(tb.x, Math.max(tb.y, 0.13));
   const TL = p.tailLength * k;
   const tail = tailPath(p, TL, 0.12 - tailBase.y).map((q) => v(tailBase.x + q.x, tailBase.y + q.y));
   const tailStartR = G * 0.42 * (p.tailShape === 'whip' ? 0.75 : 1);
@@ -176,14 +240,11 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   const tailRadii = tail.map((_, i) => lerp(tailStartR, tipR, Math.pow(i / (tail.length - 1), 0.8)));
 
   const legs: LegLayout[] = [];
-  const legTs = p.legPairs === 1 ? [0.5] : Array.from({ length: p.legPairs }, (_, i) => lerp(0.22, 0.8, i / Math.max(1, p.legPairs - 1)));
-  const hipOut = p.legStyle === 'splayed' ? 0.85 : 0.62;
   legTs.forEach((t, pair) => {
-    const s = spineAt(t);
+    const hip = hipAt(t, 0.5);
     const r = radiusAt(t);
-    const hipY = s.y - r * hs * 0.5;
     for (const side of [1, -1] as const) {
-      legs.push({ hip: v(s.x, hipY, side * r * w * 0.92 * hipOut), length: hipY, radius: p.legGirth * k, side, pair });
+      legs.push({ hip: v(hip.x, hip.y, side * r * w * 0.92 * hipOut), length: hip.y, radius: p.legGirth * k, side, pair });
     }
   });
 
@@ -192,12 +253,31 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   if (octopus) {
     for (let i = 0; i < 4; i++) {
       const t = lerp(0.3, 0.85, i / 3);
-      const s = spineAt(t);
+      const hip = hipAt(t, 0.6);
       const r = radiusAt(t);
-      const hipY = s.y - r * hs * 0.6;
       for (const side of [1, -1] as const) {
-        tentacles.push({ hip: v(s.x, hipY, side * r * w * 0.5), length: hipY, radius: Math.max(0.05, p.legGirth * 1.1) * k, side, pair: i });
+        tentacles.push({ hip: v(hip.x, hip.y, side * r * w * 0.5), length: hip.y, radius: Math.max(0.05, p.legGirth * 1.1) * k, side, pair: i });
       }
+    }
+  }
+
+  // Arms hang from the chest, a little forward and out. Low bodies hold them forward
+  // like a mantis, so hands stay off the ground.
+  const arms: ArmLayout[] = [];
+  const armR = (p.legGirth * 0.7 + 0.03) * k;
+  for (let pair = 0; pair < p.armPairs; pair++) {
+    const t = pair === 0 ? 0.82 : 0.66;
+    const s = spineAt(t);
+    const r = radiusAt(t);
+    const n = upAt(t);
+    const shoulderY = s.y + n.y * r * hs * 0.1;
+    const room = shoulderY - armR * 1.6 - 0.05 * k;
+    // Hang as steeply as the room allows; very low bodies get shorter arms held forward.
+    const length = Math.min(p.armLength * k * 0.7, Math.max(p.armLength * k * 0.7 * 0.55, room / 0.3));
+    const dy = -clamp(room / length, 0.3, 0.85);
+    for (const side of [1, -1] as const) {
+      const d = v(Math.sqrt(1 - dy * dy - 0.09), dy, side * 0.3);
+      arms.push({ shoulder: v(s.x + n.x * r * hs * 0.1, shoulderY, side * r * w * 0.88), dir: d, length, radius: armR, side, pair });
     }
   }
 
@@ -205,22 +285,31 @@ export function buildSkeleton(p: BodyPlan): Skeleton {
   if (p.spikes > 0) {
     for (let i = 0; i < p.segments; i++) {
       const t = lerp(0.14, 0.86, (i + 0.5) / p.segments);
-      spikes.push({ at: v(spineAt(t).x, backAt(t) - radiusAt(t) * hs * 0.1), height: p.spikes * G * 0.9 });
+      const b = backAt(t);
+      const n = upAt(t);
+      const sink = radiusAt(t) * hs * 0.1;
+      spikes.push({ at: v(b.x - n.x * sink, b.y - n.y * sink), dir: n, height: p.spikes * G * 0.9 });
     }
   }
 
   const wingT = 0.66;
-  const wingRoot = p.wingSpan > 0 ? v(spineAt(wingT).x, backAt(wingT) - radiusAt(wingT) * hs * 0.25) : null;
+  const wb = backAt(wingT);
+  const wn = upAt(wingT);
+  const wingSink = radiusAt(wingT) * hs * 0.25;
+  const wingRoot = p.wingSpan > 0 ? v(wb.x - wn.x * wingSink, wb.y - wn.y * wingSink) : null;
 
-  const reach = head.center.y + headSize * 0.6;
+  const headReach = head.center.y + headSize * 0.6;
+  const handReach = arms.length ? Math.max(...arms.map((a) => a.shoulder.y + a.length * 0.95)) : 0;
+  const reach = Math.max(headReach, handReach);
   const shellMass = shell ? L * G * G * 0.5 : 0;
-  const mass = L * G * G * 1.6 * w * hs + Math.pow(headSize, 3) * 2 + p.legPairs * p.legLength * p.legGirth * 0.6 * k * k * k + shellMass;
-  const tailReach = p.tailShape === 'curl' ? TL * 0.5 : p.tailShape === 'whip' ? TL * 1.2 : TL * 0.9;
-  const length = L + tailReach + neckLen * Math.cos(angle) + headSize * 1.5;
+  const armMass = p.armPairs * p.armLength * 0.7 * Math.pow(p.legGirth * 0.7 + 0.03, 2) * 3 * k * k * k;
+  const mass = L * G * G * 1.6 * w * hs + Math.pow(headSize, 3) * 2 + p.legPairs * p.legLength * p.legGirth * 0.6 * k * k * k + shellMass + armMass;
+  const tailEnd = Math.min(...tail.map((q) => q.x), spine[0].x);
+  const length = head.center.x + headSize * 1.3 - tailEnd;
 
   const skel: Skeleton = {
-    scale: k, spine, radii, backTop, widthScale: w, heightScale: hs, neck, neckRadii, head, tail, tailRadii, legs, tentacles,
-    spikes, shell, sprouts: [], wingRoot, reach, mass, length, bodyHeight,
+    scale: k, spine, radii, up, back, widthScale: w, heightScale: hs, neck, neckRadii, head, tail, tailRadii, legs, tentacles, arms,
+    spikes, shell, sprouts: [], wingRoot, reach, mass, length, bodyHeight: spineAt(0.5).y, sitDrop: Math.max(0, minBottom - 0.03 * k),
   };
   skel.sprouts = layoutSprouts(p, skel);
   return skel;

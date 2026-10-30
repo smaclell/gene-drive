@@ -56,13 +56,13 @@ export const VISITOR_THEMES: VisitorTheme[] = [
     id: 'burrow',
     title: 'Burrow',
     flavour: 'popped up out of the ground',
-    bias: { footSize: around(0.85), snout: around(0.8), legLength: around(0.18), legGirth: around(0.8), girth: around(0.75), hue: around(0.06, 0.03), lightness: around(0.35), mouth: around(0.88, 0.06), tailShape: around(0.79, 0.05), size: around(0.4) },
+    bias: { footSize: around(0.85), snout: around(0.8), legLength: around(0.18), legGirth: around(0.8), girth: around(0.75), hue: around(0.06, 0.03), lightness: around(0.35), mouth: around(0.88, 0.06), tailShape: around(0.79, 0.05), size: around(0.4), arms: around(0.7, 0.1), hands: around(0.64, 0.05) },
   },
   {
     id: 'sky',
     title: 'Sky',
     flavour: 'drifted in on the breeze',
-    bias: { wings: carrier(0.75), girth: around(0.2), bodyLength: around(0.25), hue: around(0.58, 0.05), lightness: around(0.7), size: around(0.15), mouth: around(0.58, 0.05), fluff: around(0.88, 0.06), gait: around(0.85) },
+    bias: { wings: carrier(0.75), girth: around(0.2), bodyLength: around(0.25), hue: around(0.58, 0.05), lightness: around(0.7), size: around(0.15), mouth: around(0.58, 0.05), fluff: around(0.88, 0.06), gait: around(0.85), legPairs: around(0.3, 0.06), posture: around(0.8) },
   },
   {
     id: 'glimmer',
@@ -74,7 +74,7 @@ export const VISITOR_THEMES: VisitorTheme[] = [
     id: 'reef',
     title: 'Reef',
     flavour: 'smells faintly of the sea',
-    bias: { legPairs: around(0.05, 0.05), legStyle: around(0.88, 0.07), finish: around(0.9, 0.06), tailShape: around(0.92, 0.05), hue: around(0.93, 0.04), saturation: around(0.7), headShape: around(0.3), voice: around(0.8) },
+    bias: { legPairs: around(0.05, 0.05), legStyle: around(0.88, 0.07), finish: around(0.9, 0.06), tailShape: around(0.92, 0.05), hue: around(0.93, 0.04), saturation: around(0.7), headShape: around(0.3), voice: around(0.8), arms: around(0.72, 0.1), hands: around(0.86, 0.06) },
   },
   {
     id: 'grove',
@@ -86,7 +86,7 @@ export const VISITOR_THEMES: VisitorTheme[] = [
     id: 'dune',
     title: 'Dune',
     flavour: 'trundled in from the dunes',
-    bias: { shell: carrier(0.8), legStyle: around(0.74, 0.05), legPairs: around(0.84, 0.05), bodyShape: around(0.15), legLength: around(0.25), hue: around(0.12, 0.03), lightness: around(0.6), gait: around(0.8), quirk: around(0.75, 0.05) },
+    bias: { shell: carrier(0.8), legStyle: around(0.74, 0.05), legPairs: around(0.84, 0.05), bodyShape: around(0.15), legLength: around(0.25), hue: around(0.12, 0.03), lightness: around(0.6), gait: around(0.9, 0.08), quirk: around(0.75, 0.05), girth: around(0.75), bodyLength: around(0.25) },
   },
   {
     id: 'curio',

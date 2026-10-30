@@ -17,7 +17,7 @@ export interface AbilityInfo {
 
 export const ABILITIES: Record<AbilityId, AbilityInfo> = {
   reach: { label: 'Reach', icon: '🍎', blurb: 'Picks fruit. Taller creatures reach higher branches.' },
-  dig: { label: 'Dig', icon: '🥕', blurb: 'Digs roots in the soil patch. Big feet and snouts help.' },
+  dig: { label: 'Dig', icon: '🥕', blurb: 'Digs roots in the soil patch. Big feet, snouts and claws help.' },
   swim: { label: 'Swim', icon: '🐚', blurb: 'Finds shells in the pond. Long tails and fins help.' },
   fly: { label: 'Fly', icon: '🍯', blurb: 'Needs wings big enough for its body. Gathers nectar.' },
   charm: { label: 'Charm', icon: '💖', blurb: 'Big eyes and round faces draw in wild visitors.' },
@@ -33,6 +33,7 @@ export const FLIGHT_THRESHOLD = 0.3;
 
 export const GAIT_SPEED: Record<Gait, number> = {
   walk: 0, hop: 0.08, waddle: -0.1, prance: 0.08, scuttle: 0.1, bound: 0.12, slither: 0.04, inch: -0.08, bounce: 0.02, creep: -0.04,
+  roll: 0.16, float: -0.02,
 };
 
 export function computeAbilities(p: BodyPlan, s: Skeleton): Abilities {
@@ -44,7 +45,11 @@ export function computeAbilities(p: BodyPlan, s: Skeleton): Abilities {
   const tiny = clamp01((1 - p.size) / 0.45);
   const big = clamp01((p.size - 1) / 0.7);
 
-  // Reach is in real metres, so size matters most here.
+  // Hands help: claws dig, pincers dig a little, waving paws are charming.
+  const hands = p.armPairs > 0 ? p.hands : null;
+  const armBonus = Math.min(1, p.armPairs) + (p.armPairs === 2 ? 0.5 : 0);
+
+  // Reach is in real metres, so size matters most here. Arms count: hands pick fruit too.
   const reach = clamp01((s.reach - 0.7) / 4.6);
 
   const dig = clamp01(
@@ -53,7 +58,7 @@ export function computeAbilities(p: BodyPlan, s: Skeleton): Abilities {
       : 0.15 + 0.3 * clamp01(p.snout / 0.65))
     + (p.mouth === 'tusks' ? 0.15 : p.mouth === 'jaws' ? 0.06 : 0)
     + (p.tailShape === 'club' ? 0.05 : 0) + (p.snout > 0.75 && p.mouth === 'plain' ? 0.06 : 0)
-    + 0.08 * big + tips('claw'),
+    + 0.08 * big + tips('claw') + (hands === 'claws' ? 0.14 : hands === 'pincers' ? 0.07 : 0) * armBonus,
   );
 
   const swim = clamp01(
@@ -72,7 +77,7 @@ export function computeAbilities(p: BodyPlan, s: Skeleton): Abilities {
   const charm = clamp01(
     0.35 * clamp01((p.eyeSize - 0.12) / 0.3) + 0.25 * clamp01((headRatio - 0.4) / 1.2) + earBonus + (p.tailTuft ? 0.12 : 0) + (p.glow ? 0.1 : 0)
     + 0.08 * (p.pattern === 'spots' ? 1 : 0) + 0.15 * tiny + finishBonus + fluffBonus + (p.tailShape === 'curl' ? 0.08 : 0) + (p.horns === 'unicorn' ? 0.06 : 0) + (p.twinHead ? 0.1 : 0) + (p.eyeStalks > 0 ? 0.05 : 0)
-    + tips('bulb') + tips('eye') + tips('puff'),
+    + tips('bulb') + tips('eye') + tips('puff') + (hands === 'paws' ? 0.06 : 0),
   );
 
   const legReach = p.legLength * p.size;

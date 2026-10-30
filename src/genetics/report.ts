@@ -1,7 +1,7 @@
 import { mulberry32 } from '../core/rng';
 import { GENES, GENE_IDS, type GeneId } from './genes';
 import { breed, genomeSeed, type Expressed, type Genome, type Mutation } from './genome';
-import { GAIT_LABEL, planFromGenome, type BodyPlan } from './phenotype';
+import { GAIT_LABEL, isUpright, planFromGenome, type BodyPlan } from './phenotype';
 
 /**
  * Explains genetics in player terms:
@@ -26,6 +26,8 @@ export const TRAIT_CATEGORIES = {
   heads: 'Heads',
   legs: 'Legs',
   legStyle: 'Leg style',
+  arms: 'Arms',
+  stance: 'Stance',
   gait: 'Gait',
   eyes: 'Eyes',
   ears: 'Ears',
@@ -49,7 +51,7 @@ export type TraitCategory = keyof typeof TRAIT_CATEGORIES;
 
 /** How to say "nothing special" for a category, where an empty label would read badly. */
 export const TRAIT_NONE: Partial<Record<TraitCategory, string>> = {
-  size: 'medium build', legStyle: 'plain legs', horns: 'no horns', mouth: 'plain mouth', head: 'round face', finish: 'plain finish',
+  size: 'medium build', legStyle: 'plain legs', arms: 'no arms', stance: 'low stance', horns: 'no horns', mouth: 'plain mouth', head: 'round face', finish: 'plain finish',
   tail: 'plain tail', fluff: 'no fluff', sprouts: 'no sprouts',
 };
 
@@ -59,6 +61,7 @@ const HORN_WORD = { none: '', unicorn: 'a unicorn horn', ram: 'curly horns', ant
 const MOUTH_WORD = { plain: '', beak: 'a beak', jaws: 'big jaws', tusks: 'tusks' } as const;
 const FINISH_WORD = { matte: '', gradient: 'two-tone skin', eyespots: 'eye-spots', iridescent: 'shimmering skin', jelly: 'jelly skin' } as const;
 const LEG_WORD = { straight: '', digitigrade: 'backward knees', splayed: 'skitter legs', tentacles: 'tentacles' } as const;
+const HAND_WORD = { paws: 'paws', claws: 'talons', pincers: 'pincers' } as const;
 
 /** Discrete features of a body, in words. */
 export function traitsOf(p: BodyPlan): Record<TraitCategory, string> {
@@ -67,6 +70,8 @@ export function traitsOf(p: BodyPlan): Record<TraitCategory, string> {
     heads: p.twinHead ? 'two heads' : '',
     legs: p.legPairs === 0 ? 'no legs' : `${p.legPairs * 2} legs`,
     legStyle: LEG_WORD[p.legStyle],
+    arms: p.armPairs === 0 ? '' : `${p.armPairs * 2} arms with ${HAND_WORD[p.hands]}`,
+    stance: isUpright(p) ? 'upright' : p.legPairs === 0 && p.tilt > 0.6 ? 'rearing up' : '',
     gait: `${GAIT_LABEL[p.gait].noun.toLowerCase()} gait`,
     eyes: (p.eyeCount === 1 ? 'a single eye' : `${p.eyeCount} eyes`) + (p.eyeStalks > 0 ? ' on stalks' : ''),
     ears: p.earType === 'none' ? 'no ears' : p.earType === 'round' ? 'round ears' : p.earType === 'long' ? 'long ears' : p.earType,
@@ -89,7 +94,7 @@ export function traitsOf(p: BodyPlan): Record<TraitCategory, string> {
 
 /** Genes that are reported as discrete traits rather than "beyond both parents". */
 const DISCRETE = new Set<GeneId>([
-  'hue', 'legPairs', 'eyeCount', 'earType', 'pattern', 'wings', 'glow', 'tailTuft', 'shell', 'twinTail', 'legStyle', 'mouth', 'horns',
+  'hue', 'legPairs', 'eyeCount', 'earType', 'pattern', 'wings', 'glow', 'tailTuft', 'shell', 'twinTail', 'legStyle', 'mouth', 'horns', 'arms', 'hands',
   'tailShape', 'fluff', 'finish', 'gait', 'voice', 'quirk', 'favourite', 'twinHead',
 ]);
 

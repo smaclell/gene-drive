@@ -1,5 +1,5 @@
 import { canFly, type Abilities } from './abilities';
-import type { BodyPlan, Gait } from './phenotype';
+import { isUpright, type BodyPlan, type Gait } from './phenotype';
 
 /**
  * Journal entries: notable forms the player can discover by breeding or
@@ -37,6 +37,12 @@ export const DISCOVERIES: Discovery[] = [
   { id: 'digitigrade', title: 'Backward knees', hint: 'A springier leg style.', section: 'Body', test: (p) => p.legPairs > 0 && p.legStyle === 'digitigrade' },
   { id: 'splayed', title: 'Skitter legs', hint: 'Legs that bend out to the side, like a beetle.', section: 'Body', test: (p) => p.legPairs > 0 && p.legStyle === 'splayed' },
   { id: 'tentacles', title: 'Tentacles', hint: 'The strangest leg style. Reef visitors carry it.', section: 'Body', test: (p) => p.legStyle === 'tentacles' },
+  { id: 'armed', title: 'Arms', hint: 'Arms that never touch the ground: for reaching, digging and waving hello.', section: 'Body', test: (p) => p.armPairs > 0 },
+  { id: 'four-armed', title: 'Four arms', hint: 'Arms are dominant. Keep breeding for more.', section: 'Body', test: (p) => p.armPairs === 2 },
+  { id: 'talons', title: 'Talons', hint: 'Hands with claws. Burrow visitors dig with them.', section: 'Body', test: (p) => p.armPairs > 0 && p.hands === 'claws' },
+  { id: 'pincers', title: 'Pincers', hint: 'The fanciest hands: snip, snip. Reef visitors carry them.', section: 'Body', test: (p) => p.armPairs > 0 && p.hands === 'pincers' },
+  { id: 'upright', title: 'Upright', hint: 'Two legs and a tall posture, like a penguin.', section: 'Body', test: (p) => isUpright(p) },
+  { id: 'rearing', title: 'Rearing', hint: 'A legless body that lifts its front, like a cobra.', section: 'Body', test: (p) => p.legPairs === 0 && p.tilt > 0.6 },
   // Head
   { id: 'two-headed', title: 'Two heads', hint: 'Recessive, and very rare. Curio visitors sometimes carry it.', section: 'Head', test: (p) => p.twinHead },
   { id: 'eye-stalks', title: 'Eye stalks', hint: 'Eyes on stalks, like a snail.', section: 'Head', test: (p) => p.eyeStalks > 0 },
@@ -79,6 +85,8 @@ export const DISCOVERIES: Discovery[] = [
   gait('inchworm', 'inch', 'Inchworm', 'A legless body with a steady gait.'),
   gait('bouncer', 'bounce', 'Bouncer', 'A short, legless body with a springy gait.'),
   gait('creeper', 'creep', 'Creeper', 'Walk on tentacles.'),
+  gait('roller', 'roll', 'Roller', 'A round, compact body (or a shell) that tucks in and rolls.'),
+  gait('floater', 'float', 'Floater', 'Tentacles that drift instead of walk.'),
   // Talents
   { id: 'stilts', title: 'Stilts', hint: 'The longest legs on the ranch.', section: 'Talents', test: (p) => p.legPairs > 0 && p.legLength > 2 },
   { id: 'giraffe', title: 'Sky-neck', hint: 'Reach the highest fruit. Sky-necks can shake trees.', section: 'Talents', test: (_p, a) => a.reach > 0.8 },
