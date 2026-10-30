@@ -4,6 +4,7 @@ import { GENES, GENE_IDS, GROUP_LABELS, RECESSIVE_THRESHOLD, type GeneGroup, typ
 import { GAIT_LABEL, NAP_SPOT, QUIRK_LABEL, TIMBRE_LABEL, describePlan } from '../genetics/phenotype';
 import { TRAIT_NONE, offspringOdds, type TraitOdds } from '../genetics/report';
 import { describeSprout } from '../genetics/sprouts';
+import { SOUND_GROUPS, SOUND_GROUP_IDS } from '../sim/audio';
 import type { Creature } from '../sim/creature';
 import { PRODUCE, PRODUCE_IDS } from '../sim/creature';
 import { HERD_CAP, VISITOR_RATES, WELCOME_COST, type Ranch, type Toast, type VisitorRate } from '../sim/ranch';
@@ -52,7 +53,7 @@ export class Hud {
   private readonly toasts = h('div', { class: 'toasts' });
   private readonly banner = h('div', { class: 'banner', hidden: true });
   private readonly speedBtn = h('button', { class: 'chip-btn', title: 'Game speed' });
-  private readonly soundBtn = h('button', { class: 'chip-btn', title: 'Creature voices' });
+  private readonly soundBtn = h('button', { class: 'chip-btn', title: 'Sound on or off (M)' });
   private panelFor: Creature | null = null;
   /** Partner highlighted in the breeding picker, for the odds preview. */
   private preview: Creature | null = null;
@@ -93,6 +94,9 @@ export class Hud {
     );
     this.root = h('div', { class: 'hud' }, top, this.banner, this.drawer, this.panel, this.toasts);
     parent.append(this.root);
+    this.root.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) game.ranch.sound.sfx.chime('click');
+    });
 
     game.ranch.onToast = (t) => this.toast(t);
     game.ranch.onChange = () => this.refresh();
@@ -111,7 +115,8 @@ export class Hud {
       if (breeding) this.renderPicker(sel);
     }
     this.renderBanner();
-    if (this.drawerMode) this.renderDrawer();
+    // Help is static, and redrawing it would interrupt a volume slider mid-drag.
+    if (this.drawerMode && this.drawerMode !== 'help') this.renderDrawer();
   }
 
   /** Called every frame; does cheap updates a few times a second. */
@@ -348,6 +353,7 @@ export class Hud {
 
   toggleDrawer(mode: Drawer) {
     this.drawerMode = this.drawerMode === mode ? null : mode;
+    this.game.ranch.sound.sfx.chime(this.drawerMode ? 'open' : 'close');
     this.renderDrawer();
   }
 
@@ -422,9 +428,10 @@ export class Hud {
           h('li', {}, 'Fill the Journal to unlock Lab sliders for designing your own.'),
         ),
         h('p', { class: 'small muted' }, 'Drag to move around · right-drag or Q/E to turn · scroll or pinch to zoom · WASD or arrows to pan · Home recentres'),
-        h('p', { class: 'small muted' }, 'Click a creature to say hi · Esc deselects · B breed · F follow · H herd · J journal · L lab'),
+        h('p', { class: 'small muted' }, 'Click a creature to say hi · Esc deselects · B breed · F follow · H herd · J journal · L lab · M sound'),
         h('h3', {}, 'Settings'),
         this.visitorSetting(),
+        this.soundSettings(),
         h('button', {
           class: 'chip-btn subtle',
           onclick: () => {
@@ -441,6 +448,7 @@ export class Hud {
   // ---- Toasts --------------------------------------------------------
 
   toast(t: Toast) {
+    this.game.ranch.sound.sfx.chime('toast');
     const buttons = h('div', { class: 'toast-actions' });
     const el = h('div', { class: 'toast' },
       t.icon ? h('span', { class: 'toast-icon' }, t.icon) : null,
@@ -473,10 +481,28 @@ export class Hud {
     for (const rate of Object.keys(VISITOR_RATES) as VisitorRate[]) {
       row.append(h('button', {
         class: `chip-btn ${ranch.settings.visitors === rate ? 'on' : ''}`,
-        onclick: () => ranch.setVisitorRate(rate),
+        onclick: () => {
+          ranch.setVisitorRate(rate);
+          this.renderDrawer();
+        },
       }, VISITOR_RATES[rate].label));
     }
     return row;
+  }
+
+  /** A volume slider per sound group. The 🔊 button stays the master mute. */
+  private soundSettings(): HTMLElement {
+    const { ranch } = this.game;
+    const box = h('div', { class: 'setting' }, h('span', {}, 'Sound'), h('span', { class: 'small muted', style: 'font-weight:400' }, '(🔊 in the top bar mutes everything)'));
+    const sliders = h('div', { style: 'width:100%' });
+    for (const id of SOUND_GROUP_IDS) {
+      const info = SOUND_GROUPS[id];
+      const input = h('input', { type: 'range', min: 0, max: 100, step: 1, value: Math.round(ranch.settings.volumes[id] * 100), 'aria-label': `${info.label} volume` });
+      input.addEventListener('input', () => ranch.setVolume(id, Number(input.value) / 100));
+      sliders.append(h('label', { class: 'slider', title: info.blurb }, h('span', {}, `${info.icon} ${info.label}`), input));
+    }
+    box.append(sliders);
+    return box;
   }
 
   /** Show an error string from a game action, if any. */

@@ -78,6 +78,26 @@ See [`DESIGN.md`](DESIGN.md) for the vision and reasoning.
 - [x] Journal: Arms, Four arms, Talons, Pincers, Upright, Rearing, Roller, Floater; Lab locks four arms and pincers
 - [x] Visitors: Reef carries pincers, Burrow carries talons, Sky visitors stand upright, Dune visitors roll
 
+## ✅ Milestone 4: cozy sound (done)
+
+Everything is procedural WebAudio: no samples, no new dependencies, quiet by default.
+
+- [x] Shared sound engine: one AudioContext, buses for ambience, music, creatures and chimes, a generated
+      reverb, a gentle limiter; suspended while muted or in a hidden tab
+- [x] Ambience that follows the day: gusting stereo breeze and leaf hiss, resident birds that answer each other,
+      a dove; crickets, frogs and an owl at night, crossfading through dusk
+- [x] Pond water that laps louder (with droplets) as the camera nears the pond
+- [x] Generative music: slow pad chords, a sparse kalimba melody on D major pentatonic, long rests between pieces;
+      lower, slower and minor at night
+- [x] Creature sounds faded and panned from the camera: footsteps by gait and size (pats, ticks, thumps, boings,
+      shuffles, rumbles), paddling, splashes, dives, digging, wing flutters, zoomie whooshes, tree rustles with
+      fruit plops, fruit picks, snores, pollination sparkles
+- [x] Chimes: egg hatching, new discovery, picnic, visitor at the gate, welcome, Lab sprout, release
+- [x] Soft UI taps, drawer swishes and a toast blip (skipped when an event chime already played)
+- [x] Creature voices moved onto the shared engine (same calls, now panned)
+- [x] Settings: 🔊 and M stay the master mute; Help has Ambience, Music, Creatures and Chimes sliders, saved
+      with the other settings (old settings still load)
+
 ## 🎯 Next (pending a choice)
 
 1. **Sprouts that do things:** sprouts that grab fruit, eye-sprouts that spot visitors early, leaf sprouts that photosynthesise.
@@ -112,3 +132,5 @@ See [`DESIGN.md`](DESIGN.md) for the vision and reasoning.
 - Second heads and twin tails share one neck/tail animation, offset only by yaw.
 - Jelly creatures are transparent, so their parts can sort oddly from some angles.
 - Balance numbers (costs, timings, yields) are still first guesses; produce piles up quickly with a big herd.
+- Sound levels were set by measuring offline renders, not by ear; they may want a listening pass on real speakers.
+- Footsteps fire from the walk cycle, not from feet touching the ground, so they are a patter rather than in sync.

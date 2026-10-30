@@ -1,10 +1,12 @@
 import type { BodyPlan, Timbre } from '../genetics/phenotype';
+import type { AudioEngine, Listener } from './audio';
 
 /**
  * Procedural creature voices with WebAudio. No samples: each call is a few
  * oscillator notes. Pitch comes from the body (big creatures rumble, tiny ones
  * squeak) and timbre from the voice gene. Quiet by design, distance-faded,
- * and rate-limited so a busy herd never gets noisy.
+ * and rate-limited so a busy herd never gets noisy. Plays through the shared
+ * engine's Creatures bus (`audio.ts`).
  */
 
 export type Mood = 'hello' | 'happy' | 'sleepy' | 'song' | 'surprise';
@@ -20,27 +22,32 @@ const PHRASES: Record<Mood, [number, number, number][]> = {
 };
 
 const PENTATONIC = [0, 2, 4, 7, 9, 12, 14];
+/** Voices' share of the Creatures bus: a little above the music and chimes, so calls still stand out. */
+const VOICE_LEVEL = 0.12;
 
 export class Voices {
-  muted = false;
-  /** Where the listener is (the camera's focus), for distance fading. */
-  readonly listener = { x: 0, z: 0 };
-  private ctx: AudioContext | null = null;
-  private master: GainNode | null = null;
+  private out: GainNode | null = null;
   private quietUntil = 0;
+
+  constructor(private readonly engine: AudioEngine) {}
+
+  /** Muting silences every sound, not only voices (it is the master mute). */
+  get muted() {
+    return this.engine.muted;
+  }
+
+  set muted(on: boolean) {
+    this.engine.setMuted(on);
+  }
+
+  /** Where the listener is (the camera's focus), for distance fading. */
+  get listener(): Listener {
+    return this.engine.listener;
+  }
 
   /** Browsers only allow audio after a user gesture; call this from one. */
   unlock() {
-    if (this.ctx) {
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
-      return;
-    }
-    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctor) return;
-    this.ctx = new Ctor();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = 0.22;
-    this.master.connect(this.ctx.destination);
+    this.engine.unlock();
   }
 
   /**
@@ -48,19 +55,33 @@ export class Voices {
    * distance fade and the rate limit (for sounds the player asked for).
    */
   call(plan: BodyPlan, mood: Mood, at: { x: number; z: number } | null, loud = false) {
-    const ctx = this.ctx;
-    if (!ctx || !this.master || this.muted || ctx.state !== 'running') return;
+    const ctx = this.engine.ctx;
+    const bus = this.engine.bus('creatures');
+    if (!ctx || !bus || !this.engine.audible('creatures')) return;
     const now = ctx.currentTime;
     if (!loud && now < this.quietUntil) return;
-    const dist = at ? Math.hypot(at.x - this.listener.x, at.z - this.listener.z) : 0;
+    const listener = this.engine.listener;
+    const dist = at ? Math.hypot(at.x - listener.x, at.z - listener.z) : 0;
     const volume = loud ? 1 : Math.max(0, 1 - dist / 30) * 0.7;
     if (volume < 0.05) return;
     this.quietUntil = now + 0.6;
 
+    if (this.out?.context !== ctx) {
+      this.out = ctx.createGain();
+      this.out.gain.value = VOICE_LEVEL;
+      this.out.connect(bus);
+    }
     const phrase = mood === 'song' ? songFor(plan) : PHRASES[mood];
     const out = ctx.createGain();
     out.gain.value = volume * (mood === 'sleepy' ? 0.6 : 1);
-    out.connect(this.master);
+    let tail: AudioNode = out;
+    if (at && !loud && ctx.createStereoPanner) {
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = this.engine.pan(at);
+      out.connect(pan);
+      tail = pan;
+    }
+    tail.connect(this.out);
     for (const [semi, start, len] of phrase) {
       note(ctx, out, plan.voice.timbre, plan.voice.pitch * Math.pow(2, semi / 12), now + start, len);
     }
@@ -78,7 +99,7 @@ function songFor(plan: BodyPlan): [number, number, number][] {
 }
 
 /** One note with an envelope, shaped by timbre. */
-function note(ctx: AudioContext, out: AudioNode, timbre: Timbre, freq: number, at: number, len: number) {
+function note(ctx: BaseAudioContext, out: AudioNode, timbre: Timbre, freq: number, at: number, len: number) {
   const osc = ctx.createOscillator();
   const env = ctx.createGain();
   env.gain.setValueAtTime(0, at);

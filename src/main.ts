@@ -129,6 +129,8 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   ranch.voices.unlock();
 });
 window.addEventListener('keydown', () => ranch.voices.unlock(), { once: true });
+// Buttons count as a gesture too, so the ranch can be heard from the first click anywhere.
+window.addEventListener('pointerdown', () => ranch.voices.unlock(), { capture: true });
 
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) return;
@@ -165,6 +167,8 @@ window.addEventListener('keydown', (e) => {
     hud.toggleDrawer('journal');
   } else if (e.key === 'l' || e.key === 'L') {
     game.openLab();
+  } else if (e.key === 'm' || e.key === 'M') {
+    ranch.setMuted(!ranch.settings.muted);
   }
 });
 
@@ -207,8 +211,7 @@ function frame() {
 
   if (follow && selected) view.lookAt(selected.x, selected.z);
   view.update(realDt);
-  ranch.voices.listener.x = view.focus.x;
-  ranch.voices.listener.z = view.focus.z;
+  ranch.sound.update(realDt, sky.sunHeight(), view);
 
   placeRing(ranch.effects.ring, selected);
   placeRing(ranch.effects.partnerRing, breedingFrom && breedingFrom !== selected ? breedingFrom : null);
