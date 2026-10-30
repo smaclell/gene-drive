@@ -56,7 +56,7 @@ export function computeAbilities(p: BodyPlan, s: Skeleton): Abilities {
     (hasLegs
       ? 0.45 * clamp01((p.footSize - 0.6) / 1.1) + 0.2 * clamp01((p.legGirth - 0.05) / 0.15) + 0.2 * clamp01(p.snout / 0.65) + 0.15 * shortLegs + 0.05 * (p.legPairs - 1)
       : 0.15 + 0.3 * clamp01(p.snout / 0.65))
-    + (p.mouth === 'tusks' ? 0.15 : p.mouth === 'jaws' ? 0.06 : 0)
+    + (p.mouth === 'tusks' ? 0.15 : p.mouth === 'jaws' ? 0.06 : 0) + 0.05 * Math.max(0, p.muzzle) * clamp01(p.snout / 0.4)
     + (p.tailShape === 'club' ? 0.05 : 0) + (p.snout > 0.75 && p.mouth === 'plain' ? 0.06 : 0)
     + 0.08 * big + tips('claw') + (hands === 'claws' ? 0.14 : hands === 'pincers' ? 0.07 : 0) * armBonus,
   );

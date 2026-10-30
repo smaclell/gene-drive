@@ -84,6 +84,8 @@ export interface BodyPlan {
   headStretch: number;
   headShape: HeadShape;
   snout: number;
+  /** -1 a pointed snout that hooks down (shrew, anteater) … +1 a blunt, bulbous one that turns up (pig, hippo). */
+  muzzle: number;
   mouth: Mouth;
   eyeCount: number;
   /** Eye radius as a fraction of head radius. */
@@ -279,6 +281,7 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
     headStretch,
     headShape: headStretch < -0.4 ? 'flat' : headStretch > 0.4 ? 'long' : 'round',
     snout: through(0, 0.33, 1.1, e.snout),
+    muzzle: lerp(-1, 1, e.muzzle),
     mouth: bucket(e.mouth, [0.5, 0.66, 0.82], ['plain', 'beak', 'jaws', 'tusks'] as const),
     eyeCount: eyeCountFrom(e.eyeCount),
     eyeSize: through(0.08, 0.27, 0.55, e.eyeSize),

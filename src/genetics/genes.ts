@@ -66,6 +66,7 @@ export const GENES = {
   headSize: { label: 'Head size', group: 'head', expression: 'blend', low: 'a smaller head', high: 'a bigger head', designable: true },
   headShape: { label: 'Head shape', group: 'head', expression: 'blend', low: 'a wider head', high: 'a longer head', designable: true },
   snout: { label: 'Snout', group: 'head', expression: 'blend', low: 'a flatter face', high: 'a longer snout', designable: true },
+  muzzle: { label: 'Muzzle', group: 'head', expression: 'blend', low: 'a pointier muzzle', high: 'a blunter muzzle', designable: true, founder: uniform },
   mouth: { label: 'Mouth', group: 'head', expression: 'dominant', low: 'a plainer mouth', high: 'a fancier mouth', designable: true, founder: mostlyPlain(0.32, 0.22) },
   eyeCount: { label: 'Eyes', group: 'head', expression: 'dominant', low: 'fewer eyes', high: 'extra eyes', designable: true, founder: (rng) => clamp01(0.45 + gaussian(rng) * 0.18) },
   eyeSize: { label: 'Eye size', group: 'head', expression: 'blend', low: 'beady eyes', high: 'huge eyes', designable: true },

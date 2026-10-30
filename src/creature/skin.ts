@@ -11,7 +11,9 @@ import type { V3 } from '../genetics/anatomy';
  * - bone weights, from how close it is to each blob, so one `SkinnedMesh` bends at
  *   every joint (see `build.ts`);
  * - paint coordinates (which part it is on, how far along it, and which way it
- *   faces around it), so patterns can follow the body like Spore's coat and detail paint.
+ *   faces around it), so patterns can follow the body like Spore's coat and detail paint;
+ * - ambient occlusion, read off the same distance field: creases, armpits and the
+ *   joins between parts get a little darker, so the body reads as one soft solid.
  *
  * Everything is in creature space (metres), in the rest pose.
  */
@@ -57,6 +59,8 @@ export interface SkinMesh {
   around: Float32Array;
   /** The same for the next-nearest part, and how much of it to mix in (0 … 0.5), so paint fades across joins. */
   second: { region: Uint8Array; u: Float32Array; along: Float32Array; around: Float32Array; mix: Float32Array };
+  /** Per vertex: how open the surface is, 1 in the open … about 0.4 deep in a crease. */
+  ao: Float32Array;
 }
 
 /** A blob with everything precomputed for fast distance queries. */
@@ -77,6 +81,9 @@ interface Compiled {
 }
 
 const FAR = 1e3;
+
+/** Ambient occlusion probes: distance along the normal in grid cells, and weight. */
+const AO_STEPS: [number, number][] = [[1, 0.35], [2, 0.35], [3.5, 0.3]];
 
 function compile(blob: SkinBlob, region: number, pad: number): Compiled {
   const { a, b } = blob;
@@ -351,6 +358,19 @@ export function buildSkin(blobs: SkinBlob[], cell: number): SkinMesh {
     normals.set([g[0] / n, g[1] / n, g[2] / n], v * 3);
   }
 
+  // Ambient occlusion: step out along the normal; wherever the field says another part is
+  // closer than the distance travelled, something is crowding this spot.
+  const ao = new Float32Array(count);
+  for (let v = 0; v < count; v++) {
+    let occluded = 0;
+    for (const [steps, weight] of AO_STEPS) {
+      const d = steps * h;
+      const f = sample(pos[v * 3] + normals[v * 3] * d, pos[v * 3 + 1] + normals[v * 3 + 1] * d, pos[v * 3 + 2] + normals[v * 3 + 2] * d);
+      occluded += weight * Math.max(0, d - f) / d;
+    }
+    ao[v] = 1 - Math.min(0.6, occluded * 0.9);
+  }
+
   // Bone weights and paint coordinates from the blobs near each vertex.
   const skinIndex = new Uint16Array(count * 4);
   const skinWeight = new Float32Array(count * 4);
@@ -452,5 +472,5 @@ export function buildSkin(blobs: SkinBlob[], cell: number): SkinMesh {
   geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndex, 4));
   geometry.setAttribute('skinWeight', new THREE.BufferAttribute(skinWeight, 4));
   geometry.setIndex(index);
-  return { geometry, region, u, along, around, second };
+  return { geometry, region, u, along, around, second, ao };
 }

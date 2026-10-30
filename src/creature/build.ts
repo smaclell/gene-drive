@@ -4,7 +4,7 @@ import { cells2, cells3, noise3 } from '../core/noise';
 import { clamp, clamp01, lerp, mulberry32, smoothstep, type Rng } from '../core/rng';
 import type { ArmLayout, LegLayout, Skeleton, SproutLayout, V3 } from '../genetics/anatomy';
 import type { BodyPlan, Hands, Hsl, LegStyle } from '../genetics/phenotype';
-import { creatureMaterials, type CreatureMaterials } from './materials';
+import { creatureMaterials, grainFor, skinMaterial, type CreatureMaterials } from './materials';
 import { SKIN_REGIONS, buildSkin, type SkinBlob, type SkinRegion } from './skin';
 
 /**
@@ -133,11 +133,16 @@ interface PaintOptions {
   sheen?: number;
 }
 
-/** Writes the `color`, `glow` and `sheen` attributes the shared material reads. */
-function setSkinAttributes(geo: THREE.BufferGeometry, colors: Float32Array, glows: Float32Array, sheen: number) {
+/**
+ * Writes the attributes the shared material reads: `color`, `glow` and `sheen`, plus the
+ * pattern's `paintDelta` and `mark` (see `materials.ts`). Without a pattern those are zero.
+ */
+function setSkinAttributes(geo: THREE.BufferGeometry, colors: Float32Array, glows: Float32Array, sheen: number, deltas?: Float32Array, marks?: Float32Array) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.setAttribute('glow', new THREE.BufferAttribute(glows, 1));
   geo.setAttribute('sheen', new THREE.BufferAttribute(new Float32Array(glows.length).fill(sheen), 1));
+  geo.setAttribute('paintDelta', new THREE.BufferAttribute(deltas ?? new Float32Array(colors.length), 3));
+  geo.setAttribute('mark', new THREE.BufferAttribute(marks ?? new Float32Array(glows.length).fill(-1), 1));
 }
 
 /** Where on the body a point is, for painting. `back` is 1 on the spine, -1 on the belly. */
@@ -151,8 +156,21 @@ interface Spot {
   along: number;
 }
 
-/** How much detail (pattern) colour shows at a spot, 0 … 1. */
-function patternAt(pal: Palette, p: Spot): number {
+/**
+ * The detail (pattern) layer at a spot. `mark` is a smooth signed field, positive inside a
+ * marking; the shader thresholds it per pixel, so edges stay crisp however coarse the mesh.
+ * `strength` is how fully the marking shows there, and `soft` a blurred amount for the glow mask.
+ */
+interface Detail {
+  mark: number;
+  strength: number;
+  soft: number;
+}
+
+const detail = (mark: number, strength: number, width: number): Detail => ({ mark, strength, soft: strength * smoothstep(-width, width, mark) });
+const NO_DETAIL: Detail = { mark: -1, strength: 0, soft: 0 };
+
+function patternAt(pal: Palette, p: Spot): Detail {
   const { plan } = pal;
   const s = plan.patternScale / plan.size;
   const shift = (pal.seed % 1000) * 0.37;
@@ -164,39 +182,44 @@ function patternAt(pal: Palette, p: Spot): number {
       const f = s * 1.7;
       const c = cells3(x * f + shift, y * f, z * f, pal.seed);
       const r = 0.16 + 0.22 * c.id;
-      return smoothstep(r + 0.1, r - 0.06, c.f1) * smoothstep(-0.6, -0.15, back);
+      return detail(r + 0.02 - c.f1, smoothstep(-0.6, -0.15, back), 0.08);
     }
     case 'patches': {
       // Giraffe-like plates of colour with pale seams between them.
       const f = s * 0.85;
       const c = cells3(x * f + shift, y * f, z * f, pal.seed);
-      return smoothstep(0.08, 0.24, c.f2 - c.f1) * smoothstep(-0.5, -0.05, back) * (0.85 + 0.15 * c.id);
+      return detail(c.f2 - c.f1 - 0.15, smoothstep(-0.5, -0.05, back) * (0.85 + 0.15 * c.id), 0.08);
     }
     case 'stripes': {
       // Bands across the body that taper to points toward the belly, rings on tails, bars on upper limbs.
       const wobble = (noise3(x * 2.5 + shift, y * 2.5, z * 2.5) - 0.5) * 0.9;
       const coord = region === 'head' || region === 'snout' ? x : p.along;
       const wave = Math.sin((coord * s * 2.2 + wobble) * Math.PI * 2);
-      if (region === 'tail') return smoothstep(0.0, 0.4, wave) * smoothstep(0.05, 0.2, u);
+      if (region === 'tail') return detail(wave - 0.2, smoothstep(0.05, 0.2, u), 0.2);
       const threshold = lerp(0.92, 0.05, smoothstep(-0.45, 0.75, back));
-      const bar = smoothstep(threshold - 0.08, threshold + 0.2, wave);
-      return limb ? bar * smoothstep(0.65, 0.35, u) : bar;
+      return detail(wave - threshold - 0.06, limb ? smoothstep(0.65, 0.35, u) : 1, 0.14);
     }
     case 'plain':
       // Glowing creatures get freckles, so they still sparkle at night.
-      return plan.glow ? smoothstep(0.7, 0.76, noise3(x * 5 + shift, y * 5, z * 5)) : 0;
+      return plan.glow ? detail(noise3(x * 5 + shift, y * 5, z * 5) - 0.73, 1, 0.03) : NO_DETAIL;
   }
 }
 
-/** Layered skin colour at one spot: base, coat, detail, belly, points, finish. Returns the glow. */
-function skinColour(pal: Palette, p: Spot, out: THREE.Color): number {
+/** Distance to the nearest eye-spot centre, in eye-spot radii (Infinity if none is near). */
+function eyespotAt(pal: Palette, p: Spot): number {
+  let best = Infinity;
+  for (const spot of pal.eyespots) best = Math.min(best, Math.hypot(p.x - spot.at.x, p.y - spot.at.y, p.z - spot.at.z) / spot.r);
+  return best;
+}
+
+/** Layered skin colour at one spot with `detail` (0 … 1) of the pattern showing: base, coat, detail, belly, points, finish. */
+function skinColour(pal: Palette, p: Spot, detail: number, out: THREE.Color) {
   const { plan } = pal;
   const { back, region, u } = p;
   out.copy(pal.body);
   if (plan.finish === 'gradient') out.lerp(pal.accent, smoothstep(pal.gradient[0], pal.gradient[1], p.x) * 0.85);
   // Coat: the back is darker, so bodies read as round from above, like most animals.
   out.lerp(pal.coat, smoothstep(-0.05, 0.75, back) * 0.8);
-  const detail = patternAt(pal, p);
   out.lerp(pal.accent, detail);
   const belly = region === 'leg' || region === 'arm' || region === 'foot' || region === 'hand' ? 0 : smoothstep(-0.2, -0.7, back);
   out.lerp(pal.belly, belly * (1 - detail * 0.7));
@@ -205,16 +228,27 @@ function skinColour(pal: Palette, p: Spot, out: THREE.Color): number {
     : region === 'leg' || region === 'arm' ? smoothstep(0.55, 0.95, u) * 0.7
     : region === 'tail' ? smoothstep(0.8, 1, u) * 0.45 : 0;
   out.lerp(pal.points, points);
-  let glow = plan.glow ? detail : 0;
-  for (const spot of pal.eyespots) {
-    const d = Math.hypot(p.x - spot.at.x, p.y - spot.at.y, p.z - spot.at.z) / spot.r;
-    if (d >= 1) continue;
-    if (d < 0.34) out.copy(DARK);
-    else if (d < 0.66) out.copy(IVORY).lerp(pal.accent, 0.25);
-    else out.copy(pal.accent).multiplyScalar(0.55);
-    glow = plan.glow && d >= 0.34 && d < 0.66 ? 1 : glow;
-  }
-  return glow;
+  const d = eyespotAt(pal, p);
+  if (d < 0.34) out.copy(DARK);
+  else if (d < 0.66) out.copy(IVORY).lerp(pal.accent, 0.25);
+  else if (d < 1) out.copy(pal.accent).multiplyScalar(0.55);
+}
+
+const withDetail = new THREE.Color();
+
+/**
+ * Paint for one spot: `base` is the colour without the pattern, `delta` (r, g, b) what the
+ * pattern adds where it shows. Returns the pattern's mark and the glow mask.
+ */
+function skinPaint(pal: Palette, p: Spot, base: THREE.Color, delta: number[]): { mark: number; glow: number } {
+  const d = patternAt(pal, p);
+  skinColour(pal, p, 0, base);
+  skinColour(pal, p, d.strength, withDetail);
+  delta[0] = withDetail.r - base.r;
+  delta[1] = withDetail.g - base.g;
+  delta[2] = withDetail.b - base.b;
+  const ring = eyespotAt(pal, p);
+  return { mark: d.mark, glow: pal.plan.glow ? (ring >= 0.34 && ring < 0.66 ? 1 : d.soft) : 0 };
 }
 
 /** Bake skin colour, pattern, finish and glow mask into a rigblock's vertex attributes. */
@@ -223,21 +257,45 @@ function paint(geo: THREE.BufferGeometry, pal: Palette, opts: PaintOptions = {})
   const pos = geo.getAttribute('position');
   const nrm = geo.getAttribute('normal');
   const colors = new Float32Array(pos.count * 3);
+  const deltas = new Float32Array(pos.count * 3);
+  const marks = new Float32Array(pos.count).fill(-1);
   const glows = new Float32Array(pos.count);
   const offset = opts.offset ?? new THREE.Vector3();
   const c = new THREE.Color();
+  const delta = [0, 0, 0];
   for (let i = 0; i < pos.count; i++) {
     let glow = 0;
     if (opts.solid) {
       c.copy(opts.solid);
     } else {
       const x = pos.getX(i) + offset.x;
-      glow = skinColour(pal, { x, y: pos.getY(i) + offset.y, z: pos.getZ(i) + offset.z, back: nrm.getY(i), region: 'neck', u: 0.5, along: x }, c);
+      const paint = skinPaint(pal, { x, y: pos.getY(i) + offset.y, z: pos.getZ(i) + offset.z, back: nrm.getY(i), region: 'neck', u: 0.5, along: x }, c, delta);
+      deltas.set(delta, i * 3);
+      marks[i] = paint.mark;
+      glow = paint.glow;
     }
     colors.set([c.r, c.g, c.b], i * 3);
     glows[i] = opts.glow ?? glow;
   }
-  setSkinAttributes(geo, colors, glows, opts.sheen ?? pal.sheen);
+  setSkinAttributes(geo, colors, glows, opts.sheen ?? pal.sheen, deltas, marks);
+  return geo;
+}
+
+/** An iris: bright in the middle, darker toward the rim, like a real eye. */
+function paintIris(geo: THREE.BufferGeometry, iris: THREE.Color): THREE.BufferGeometry {
+  geo.computeBoundingSphere();
+  const pos = geo.getAttribute('position');
+  const r = geo.boundingSphere!.radius;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  const light = iris.clone().lerp(new THREE.Color(0xffffff), 0.25);
+  const rim = iris.clone().multiplyScalar(0.45);
+  for (let i = 0; i < pos.count; i++) {
+    const d = Math.hypot(pos.getX(i), pos.getY(i)) / r;
+    c.copy(light).lerp(iris, smoothstep(0.3, 0.7, d)).lerp(rim, smoothstep(0.75, 1, d));
+    colors.set([c.r, c.g, c.b], i * 3);
+  }
+  setSkinAttributes(geo, colors, new Float32Array(pos.count), 0);
   return geo;
 }
 
@@ -479,12 +537,53 @@ function headScale(plan: BodyPlan) {
   return { sx: 1.05 + 0.55 * long + 0.1 * flat, sy: 0.95 - 0.12 * long - 0.35 * flat, sz: 0.95 - 0.15 * long + 0.35 * flat, long, flat };
 }
 
+/** Where the eyes sit on the head, as [yaw, pitch] in radians, before the head shape moves them. */
+function eyeSpots(plan: BodyPlan): [number, number][] {
+  switch (plan.eyeCount) {
+    case 1: return [[0, 0.3]];
+    case 2: return [[-0.42, 0.25], [0.42, 0.25]];
+    case 3: return [[-0.45, 0.15], [0.45, 0.15], [0, 0.62]];
+    default: return [[-0.4, 0.05], [0.4, 0.05], [-0.32, 0.55], [0.32, 0.55]];
+  }
+}
+
+/** A point on the head ellipsoid (head space) at `yaw` and `pitch`, `depth` of the way out. */
+function onHead(plan: BodyPlan, hr: number, yaw: number, pitch: number, depth: number): THREE.Vector3 {
+  const hs = headScale(plan);
+  return new THREE.Vector3(Math.cos(pitch) * Math.cos(yaw) * hs.sx, Math.sin(pitch) * hs.sy, Math.cos(pitch) * Math.sin(yaw) * hs.sz).multiplyScalar(hr * depth);
+}
+
+/** Final eye placement: long faces spread the eyes, frogs and stalks lift them. */
+function eyeAngles(plan: BodyPlan, [yaw0, pitch0]: [number, number]): [number, number] {
+  const hs = headScale(plan);
+  const lift = 0.45 * hs.flat + (plan.eyeStalks > 0 ? 0.4 : 0);
+  return [clamp(yaw0 * (1 + 0.6 * hs.long), -1.3, 1.3), Math.min(1.25, pitch0 + lift)];
+}
+
 function buildHead(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vector3) {
   const { plan, pal, skin, mesh } = ctx;
   const hs = headScale(plan);
   const q = head.getWorldQuaternion(new THREE.Quaternion());
+  const headId = boneIds(head);
   // A sunk head melts softly into the chest, so face and body read as one shape.
-  blobEllipsoid(ctx, 'head', at(head), { x: hr * hs.sx, y: hr * hs.sy, z: hr * hs.sz }, q, boneIds(head), hr * (0.45 + 0.55 * plan.headSink), 0, 1, hr * 2);
+  blobEllipsoid(ctx, 'head', at(head), { x: hr * hs.sx, y: hr * hs.sy, z: hr * hs.sz }, q, headId, hr * (0.45 + 0.55 * plan.headSink), 0, 1, hr * 2);
+  // A head is several segments, not one ball: full cheeks low on the sides (frogs and blunt
+  // muzzles have the fullest), and a brow bump over each eye (sharpest on long, pointed faces).
+  const cheeks = 0.25 + 0.4 * hs.flat + 0.25 * Math.max(0, plan.muzzle);
+  for (const side of [1, -1]) {
+    const c = onHead(plan, hr, side * 0.85, -0.45, 0.62);
+    blobEllipsoid(ctx, 'head', atV(head, c), { x: hr * 0.42, y: hr * (0.2 + 0.25 * cheeks), z: hr * (0.18 + 0.3 * cheeks) }, q, headId, hr * 0.3);
+  }
+  if (plan.eyeStalks === 0 && plan.eyeCount <= 2) {
+    const brow = 0.35 + 0.4 * hs.long + 0.3 * Math.max(0, -plan.muzzle) + 0.3 * hs.flat;
+    const eyeR = hr * plan.eyeSize * (plan.eyeCount === 1 ? 1.5 : 1);
+    for (const spot of eyeSpots(plan)) {
+      const [yaw, pitch] = eyeAngles(plan, spot);
+      const c = onHead(plan, hr, yaw, pitch + 0.22 + eyeR / hr * 0.75, 0.84);
+      const r = Math.max(hr * 0.09, eyeR * 0.75) * brow;
+      blobEllipsoid(ctx, 'head', atV(head, c), { x: r * 0.8, y: r * 0.55, z: r * 1.25 }, q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -yaw)), headId, hr * 0.18);
+    }
+  }
   buildMouth(ctx, head, hr, world);
   buildEyes(ctx, head, hr, world);
   buildEars(ctx, head, hr);
@@ -519,7 +618,6 @@ function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vec
   const front = hr * hs.sx;
   const sl = plan.snout;
   const headId = boneIds(head);
-  const q = head.getWorldQuaternion(new THREE.Quaternion());
 
   if (plan.mouth === 'beak') {
     const bl = hr * (0.55 + sl * 1.2);
@@ -554,46 +652,98 @@ function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vec
     return;
   }
 
-  // The snout is skin: it melts into the face.
-  let tipX = front * 0.9;
-  let mouthAt = new THREE.Vector3();
-  let mouthR = new THREE.Vector3(hr * hs.sx, hr * hs.sy, hr * hs.sz);
-  if (sl > 0.05) {
-    const r = new THREE.Vector3(hr * 0.55 * (1 + sl * 2.2), hr * 0.55 * 0.8, hr * 0.55 * 0.9);
-    const c = new THREE.Vector3(front * 0.52 + sl * hr * 0.6, -hr * 0.28 * hs.sy, 0);
-    blobEllipsoid(ctx, 'snout', atV(head, c), r, q, headId, hr * 0.3, 0, 1, r.x * 2);
-    tipX = c.x + r.x;
-    const nose = mesh(ellipsoid(hr * 0.14, 1.2, 0.8, 1.3, 12), mats.pupil, false);
-    nose.position.set(tipX - hr * 0.04, c.y + r.y * 0.45, 0);
-    head.add(nose);
-    if (sl > 0.25) {
-      mouthAt = c;
-      mouthR = r;
-    }
+  // The snout is skin too: a chain of segments along a curve, so it can taper to a point and
+  // hook down, or swell into a blunt, upturned nose. It melts into the face.
+  if (sl <= 0.05) {
+    if (plan.mouth === 'jaws') buildJaw(ctx, head, hr, front * 0.42, -hr * 0.55 * hs.sy, hr * 0.42, 1);
+    else smile(ctx, head, new THREE.Vector3(), new THREE.Vector3(hr * hs.sx, hr * hs.sy, hr * hs.sz), 0.55, 0.5);
+    if (plan.mouth === 'tusks') buildTusks(ctx, head, hr, front * 0.6, -hr * 0.42 * hs.sy);
+    return;
   }
+  const blunt = (plan.muzzle + 1) / 2;
+  const len = hr * (0.2 + sl * 1.55);
+  const r0 = hr * (0.5 + 0.08 * hs.flat);
+  const rTip = r0 * lerp(0.3, 0.92, blunt);
+  const p0 = new THREE.Vector3(front * 0.45, -hr * 0.22 * hs.sy, 0);
+  const p1 = p0.clone().add(new THREE.Vector3(len * 0.55, len * lerp(0.07, -0.04, blunt), 0));
+  const p2 = p0.clone().add(new THREE.Vector3(len * lerp(0.9, 1, blunt), len * lerp(-0.34, 0.14, blunt), 0));
+  const line = (t: number) => p0.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(p1, 2 * t * (1 - t)).addScaledVector(p2, t * t);
+  const tangent = (t: number) => p1.clone().sub(p0).multiplyScalar(2 * (1 - t)).addScaledVector(p2.clone().sub(p1), 2 * t).normalize();
+  // Pointed snouts taper; blunt ones keep their girth and end in a bulb.
+  const radius = (t: number) => lerp(r0, rTip, Math.pow(t, 0.8)) + Math.max(0, plan.muzzle) * 0.18 * r0 * smoothstep(0.65, 1, t);
+  const SEGMENTS = 4;
+  for (let i = 0; i < SEGMENTS; i++) {
+    const t0 = i / SEGMENTS;
+    const t1 = (i + 1) / SEGMENTS;
+    capsule(ctx, 'snout', atV(head, line(t0)), atV(head, line(t1)), radius(t0), radius(t1), headId, t0, t1, len, i === 0 ? hr * 0.32 : radius(t1) * 0.2);
+  }
+  const tip = line(1).addScaledVector(tangent(1), rTip * 0.88);
+  buildNose(ctx, head, hr, tip, tangent(1), rTip);
+
+  // The mouth line runs back along both sides of the snout from its tip, curling up at the corners.
+  const onSnout = (t: number, side: number, drop: number) => {
+    const c = line(t);
+    const tg = tangent(t);
+    const down = new THREE.Vector3(-tg.y, tg.x, 0).multiplyScalar(-1);
+    return c.addScaledVector(down, radius(t) * drop * 1.02).add(new THREE.Vector3(0, 0, side * radius(t) * Math.sqrt(1 - drop * drop) * 1.02));
+  };
+  const corner = plan.mouth === 'jaws' ? 0.08 : lerp(0.25, 0.12, blunt);
+  const mouthPts = [onSnout(corner, 1, 0.1), onSnout(0.5, 1, 0.45), onSnout(0.86, 1, 0.62), line(1).addScaledVector(tangent(1), rTip * 0.62).add(new THREE.Vector3(0, -rTip * 0.62, 0)),
+    onSnout(0.86, -1, 0.62), onSnout(0.5, -1, 0.45), onSnout(corner, -1, 0.1)];
+  const thick = r0 * 0.07;
+  head.add(ctx.mesh(paint(splineTube(mouthPts, [thick * 0.5, thick, thick, thick, thick, thick, thick * 0.5], 24, 6), pal, { solid: MOUTH, sheen: 0 }), skin, false));
 
   if (plan.mouth === 'jaws') {
-    const jl = 1 + sl * 1.6;
-    const jawX = front * 0.42 + sl * hr * 0.45;
-    blobEllipsoid(ctx, 'snout', at(head, jawX, -hr * 0.55 * hs.sy, 0), { x: hr * 0.42 * jl, y: hr * 0.42 * 0.45, z: hr * 0.42 * 0.85 }, q, headId, hr * 0.2);
+    // A lower jaw under the snout, with fangs at the front: an underbite.
+    const jawEnd = line(0.85);
+    buildJaw(ctx, head, hr, (p0.x + jawEnd.x) / 2, (p0.y + jawEnd.y) / 2 - radius(0.4) * 0.6, (jawEnd.x - p0.x) / 2 + radius(0.85) * 0.5, radius(0.5) / (hr * 0.42));
+  }
+  if (plan.mouth === 'tusks') buildTusks(ctx, head, hr, line(0.55).x, line(0.55).y - radius(0.55) * 0.5);
+}
+
+/** A lower jaw (a flattened ellipsoid of skin) centred at x, y in head space, with two fangs at its front. */
+function buildJaw(ctx: Ctx, head: THREE.Object3D, hr: number, x: number, y: number, halfLength: number, thickness: number) {
+  const q = head.getWorldQuaternion(new THREE.Quaternion());
+  const r = hr * 0.42 * thickness;
+  blobEllipsoid(ctx, 'snout', at(head, x, y, 0), { x: halfLength, y: r * 0.45, z: r * 0.85 }, q, boneIds(head), hr * 0.2);
+  for (const side of [1, -1]) {
+    const fang = new THREE.ConeGeometry(hr * 0.075, hr * 0.28, 6);
+    fang.translate(x + halfLength * 0.72, y + r * 0.45, side * r * 0.4);
+    head.add(ctx.mesh(paint(fang, ctx.pal, { solid: IVORY, sheen: 0 }), ctx.skin, false));
+  }
+}
+
+function buildTusks(ctx: Ctx, head: THREE.Object3D, hr: number, x: number, y: number) {
+  for (const side of [1, -1]) {
+    const len = hr * (0.85 + ctx.plan.snout * 0.6);
+    const tusk = ctx.mesh(paint(talon(hr * 0.11, len, 0.45), ctx.pal, { solid: IVORY, sheen: 0 }), ctx.skin);
+    tusk.position.set(x, y, side * hr * 0.32);
+    tusk.rotation.set(side * 0.3, 0, -0.25);
+    head.add(tusk);
+  }
+}
+
+/** A button nose on pointed snouts; blunt ones get a flat, pig-like disc with two nostrils. */
+function buildNose(ctx: Ctx, head: THREE.Object3D, hr: number, tip: THREE.Vector3, dir: THREE.Vector3, rTip: number) {
+  const { mats, pal, mesh } = ctx;
+  const nose = new THREE.Group();
+  nose.position.copy(tip);
+  nose.lookAt(tip.clone().add(dir));
+  if (ctx.plan.muzzle > 0.45) {
+    const disc = mesh(paint(ellipsoid(rTip * 0.62, 1.05, 0.82, 0.32, 16), pal, { solid: pal.belly.clone().lerp(pal.accent, 0.35).multiplyScalar(0.85), sheen: 0 }), ctx.skin, false);
+    disc.position.z = -rTip * 0.12;
+    nose.add(disc);
     for (const side of [1, -1]) {
-      const fang = new THREE.ConeGeometry(hr * 0.075, hr * 0.28, 6);
-      fang.translate(jawX + hr * 0.42 * jl * 0.72, -hr * 0.34 * hs.sy, side * hr * 0.17);
-      head.add(mesh(paint(fang, pal, { solid: IVORY, sheen: 0 }), skin, false));
+      const nostril = mesh(ellipsoid(rTip * 0.12, 0.8, 1.2, 0.5, 8), mats.pupil, false);
+      nostril.position.set(side * rTip * 0.24, 0, rTip * 0.06);
+      nose.add(nostril);
     }
   } else {
-    smile(ctx, head, mouthAt, mouthR, mouthAt.x ? 0.42 : 0.55, mouthAt.x ? 0.35 : 0.5);
+    const button = mesh(ellipsoid(Math.max(rTip * 0.42, hr * 0.08), 1.25, 0.85, 0.9, 12), mats.pupil, false);
+    button.position.set(0, rTip * 0.32, -rTip * 0.15);
+    nose.add(button);
   }
-
-  if (plan.mouth === 'tusks') {
-    for (const side of [1, -1]) {
-      const len = hr * (0.85 + sl * 0.6);
-      const tusk = mesh(paint(talon(hr * 0.11, len, 0.45), pal, { solid: IVORY, sheen: 0 }), skin);
-      tusk.position.set(Math.min(tipX, front * 0.6 + sl * hr * 0.6), -hr * 0.42 * hs.sy, side * hr * 0.32);
-      tusk.rotation.set(side * 0.3, 0, -0.25);
-      head.add(tusk);
-    }
-  }
+  head.add(nose);
 }
 
 function buildEyes(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vector3) {
@@ -601,26 +751,19 @@ function buildEyes(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vect
   const hs = headScale(plan);
   const eyeR = hr * plan.eyeSize;
   const stalk = plan.eyeStalks * hr;
-  const spots: [number, number][] = (() => {
-    switch (plan.eyeCount) {
-      case 1: return [[0, 0.3]];
-      case 2: return [[-0.42, 0.25], [0.42, 0.25]];
-      case 3: return [[-0.45, 0.15], [0.45, 0.15], [0, 0.62]];
-      default: return [[-0.4, 0.05], [0.4, 0.05], [-0.32, 0.55], [0.32, 0.55]];
-    }
-  })();
   const eyeScale = (plan.eyeCount === 1 ? 1.5 : plan.eyeCount >= 3 ? 0.8 : 1) * (stalk ? 1.15 : 1);
-  // Frogs wear their eyes on top; long faces spread them to the sides.
-  const lift = 0.45 * hs.flat + (stalk ? 0.4 : 0);
   // Sleepy creatures have heavier lids.
-  const lid = lerp(0.8, 0.42, plan.energy);
-  for (const [yaw0, pitch0] of spots) {
-    const yaw = clamp(yaw0 * (1 + 0.6 * hs.long), -1.3, 1.3);
-    const pitch = Math.min(1.25, pitch0 + lift);
+  const lid = lerp(0.66, 0.36, plan.energy);
+  // Every eye looks at the same spot a little ahead of the face, so the gaze is friendly
+  // rather than wall-eyed. Eyes far round the side only turn part of the way.
+  const gaze = new THREE.Vector3(hr * (hs.sx + 2.6), -hr * 0.25, 0);
+  const lidColour = pal.body.clone().lerp(pal.coat, 0.4);
+  for (const spot of eyeSpots(plan)) {
+    const [yaw, pitch] = eyeAngles(plan, spot);
     const dir = new THREE.Vector3(Math.cos(pitch) * Math.cos(yaw), Math.sin(pitch), Math.cos(pitch) * Math.sin(yaw));
-    const base = new THREE.Vector3(dir.x * hs.sx, dir.y * hs.sy, dir.z * hs.sz).multiplyScalar(hr * 0.88);
+    const base = onHead(plan, hr, yaw, pitch, 0.84);
     let pos = base;
-    let look = dir;
+    let look = dir.clone().lerp(gaze.clone().sub(base).normalize(), 0.7).normalize();
     if (stalk) {
       const up = dir.clone().add(new THREE.Vector3(0.15, 0.9, 0)).normalize();
       pos = base.clone().addScaledVector(up, stalk);
@@ -632,21 +775,23 @@ function buildEyes(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vect
     eye.position.copy(pos);
     // lookAt aims +z, and works in local space because the eye has no parent yet.
     eye.lookAt(pos.clone().addScaledVector(look, hr * 4));
-    eye.add(mesh(ellipsoid(r, 1, 1, 0.8, 16), mats.eyeWhite, false));
-    // A coloured iris, a big pupil and a highlight: the creature's face lives here.
-    const iris = mesh(paint(ellipsoid(r * 0.66, 1, 1, 0.4, 14), pal, { solid: pal.iris, sheen: 0.4 }), skin, false);
-    iris.position.z = r * 0.62;
+    eye.add(mesh(ellipsoid(r, 1, 1, 0.85, 18), mats.eyeWhite, false));
+    // Iris with a darker rim, a big pupil and two catchlights: the creature's face lives here.
+    const iris = mesh(paintIris(ellipsoid(r * 0.64, 1, 1, 0.38, 18), pal.iris), skin, false);
+    iris.position.z = r * 0.66;
     eye.add(iris);
-    const pupil = mesh(ellipsoid(r * 0.38, 1, 1, 0.4, 12), mats.pupil, false);
-    pupil.position.z = r * 0.76;
+    const pupil = mesh(ellipsoid(r * 0.36, 1, 1.08, 0.4, 14), mats.pupil, false);
+    pupil.position.z = r * 0.8;
     eye.add(pupil);
-    const shine = mesh(ellipsoid(r * 0.16, 1, 1, 0.6, 8), mats.shine, false);
-    shine.position.set(r * 0.24, r * 0.28, r * 0.82);
-    eye.add(shine);
-    // An upper lid in the coat colour; it closes with the blink.
-    const lidGeo = new THREE.SphereGeometry(r * 1.08, 16, 8, 0, Math.PI * 2, 0, lid);
-    lidGeo.rotateX(-0.3);
-    eye.add(mesh(paint(lidGeo, pal, { solid: pal.coat }), skin, false));
+    const shine = mesh(ellipsoid(r * 0.15, 1, 1, 0.5, 8), mats.shine, false);
+    shine.position.set(r * 0.22, r * 0.26, r * 0.9);
+    const glint = mesh(ellipsoid(r * 0.07, 1, 1, 0.5, 6), mats.shine, false);
+    glint.position.set(-r * 0.2, -r * 0.2, r * 0.9);
+    eye.add(shine, glint);
+    // An upper lid in the skin colour around the eye; it closes with the blink.
+    const lidGeo = new THREE.SphereGeometry(r * 1.06, 18, 8, 0, Math.PI * 2, 0, lid);
+    lidGeo.rotateX(-0.12);
+    eye.add(mesh(paint(lidGeo, pal, { solid: lidColour }), skin, false));
     head.add(eye);
     ctx.eyes.push(eye);
   }
@@ -1255,14 +1400,19 @@ function buildBack(ctx: Ctx, body: THREE.Group) {
 /** Bones along the spine; bending moves these and the skin follows. */
 const SPINE_BONES = 9;
 
-/** Paint every skin vertex from its part, blending across joins. */
+/** Paint every skin vertex from its part, blending across joins, shaded by the skin's ambient occlusion. */
 function paintSkin(geo: THREE.BufferGeometry, skin: ReturnType<typeof buildSkin>, pal: Palette) {
   const pos = geo.getAttribute('position');
   const nrm = geo.getAttribute('normal');
   const colors = new Float32Array(pos.count * 3);
+  const deltas = new Float32Array(pos.count * 3);
+  const marks = new Float32Array(pos.count);
   const glows = new Float32Array(pos.count);
   const a = new THREE.Color();
   const b = new THREE.Color();
+  const da = [0, 0, 0];
+  const db = [0, 0, 0];
+  const k = pal.plan.size;
   // Which way is "back": around the body for long parts, the normal for blobs and limbs.
   const backOf = (region: SkinRegion, around: number, ny: number) =>
     region === 'torso' || region === 'neck' || region === 'tail' ? Math.cos(around) : region === 'head' || region === 'snout' ? ny : ny * 0.6 - 0.2;
@@ -1272,18 +1422,25 @@ function paintSkin(geo: THREE.BufferGeometry, skin: ReturnType<typeof buildSkin>
     const z = pos.getZ(i);
     const ny = nrm.getY(i);
     const region = SKIN_REGIONS[skin.region[i]];
-    let glow = skinColour(pal, { x, y, z, back: backOf(region, skin.around[i], ny), region, u: skin.u[i], along: skin.along[i] }, a);
+    const first = skinPaint(pal, { x, y, z, back: backOf(region, skin.around[i], ny), region, u: skin.u[i], along: skin.along[i] }, a, da);
+    let { mark, glow } = first;
     const mix = skin.second.mix[i];
     if (mix > 0.02) {
       const r2 = SKIN_REGIONS[skin.second.region[i]];
-      const g2 = skinColour(pal, { x, y, z, back: backOf(r2, skin.second.around[i], ny), region: r2, u: skin.second.u[i], along: skin.second.along[i] }, b);
+      const second = skinPaint(pal, { x, y, z, back: backOf(r2, skin.second.around[i], ny), region: r2, u: skin.second.u[i], along: skin.second.along[i] }, b, db);
       a.lerp(b, mix);
-      glow = lerp(glow, g2, mix);
+      for (let c = 0; c < 3; c++) da[c] = lerp(da[c], db[c], mix);
+      mark = lerp(mark, second.mark, mix);
+      glow = lerp(glow, second.glow, mix);
     }
-    colors.set([a.r, a.g, a.b], i * 3);
+    // Creases darken, and so does skin right by the ground, as if in its own soft shadow.
+    const shade = skin.ao[i] * lerp(0.8, 1, smoothstep(0, 0.14 * k, y));
+    colors.set([a.r * shade, a.g * shade, a.b * shade], i * 3);
+    deltas.set([da[0] * shade, da[1] * shade, da[2] * shade], i * 3);
+    marks[i] = mark;
     glows[i] = glow;
   }
-  setSkinAttributes(geo, colors, glows, pal.sheen);
+  setSkinAttributes(geo, colors, glows, pal.sheen, deltas, marks);
 }
 
 export function buildCreature(plan: BodyPlan, skel: Skeleton, seed: number): CreatureRig {
@@ -1464,8 +1621,10 @@ export function buildCreature(plan: BodyPlan, skel: Skeleton, seed: number): Cre
   const cell = clamp(thinnest, longest / 66, longest / 46);
   const skinData = buildSkin(ctx.blobs, cell);
   paintSkin(skinData.geometry, skinData, pal);
+  const grain = grainFor(plan.texture, plan.size);
+  skinData.geometry.setAttribute('grain', new THREE.BufferAttribute(new Float32Array(skinData.u.length).fill(grain), 1));
   geometries.push(skinData.geometry);
-  const skinMesh = new THREE.SkinnedMesh(skinData.geometry, ctx.skin);
+  const skinMesh = new THREE.SkinnedMesh(skinData.geometry, skinMaterial(plan.texture, jelly));
   skinMesh.castShadow = true;
   body.add(skinMesh);
   root.updateMatrixWorld(true);
