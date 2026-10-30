@@ -1,14 +1,17 @@
 import { clamp01, gaussian, wrap01, type Rng } from '../core/rng';
 import { GENES, GENE_IDS, type GeneDef, type GeneId } from './genes';
+import { DEFAULT_SPROUT_RATES, founderSprouts, inheritSprouts, reviveSprouts, type SproutGene } from './sprouts';
 
 /** Two alleles per gene: one from each parent. */
 export type AllelePair = [number, number];
-export type Genome = Record<GeneId, AllelePair>;
+/** Fixed genes (two alleles each) plus a variable-length list of sprout genes (see `sprouts.ts`). */
+export type Genome = Record<GeneId, AllelePair> & { sprouts: SproutGene[] };
 /** The single value per gene that the body actually uses. */
 export type Expressed = Record<GeneId, number>;
 
 export interface Mutation {
-  gene: GeneId;
+  /** 'sprouts' when the sprout list grew or shrank; `from` and `to` are then sprout counts. */
+  gene: GeneId | 'sprouts';
   from: number;
   to: number;
   /** A jump to a random value rather than a small drift. */
@@ -20,14 +23,14 @@ export interface BreedOptions {
   driftRate?: number;
   /** Chance per allele of a jump to a random value. */
   jumpRate?: number;
-  /** Multiplies both rates; hook for future mutation boosters. */
+  /** Multiplies all rates, sprout changes included; hook for future mutation boosters. */
   mutationBoost?: number;
 }
 
 export const DEFAULT_DRIFT_RATE = 0.07;
 export const DEFAULT_JUMP_RATE = 0.012;
 
-const defaultFounder = (rng: Rng) => clamp01(0.5 + gaussian(rng) * 0.27);
+const defaultFounder = (rng: Rng) => clamp01(0.5 + gaussian(rng) * 0.3);
 
 export function expressGene(def: GeneDef, [a, b]: AllelePair): number {
   switch (def.expression) {
@@ -53,7 +56,10 @@ export function express(genome: Genome): Expressed {
   return out;
 }
 
-export type FounderBias = Partial<Record<GeneId, (rng: Rng) => number>>;
+export type FounderBias = Partial<Record<GeneId, (rng: Rng) => number>> & {
+  /** Chance of founder sprouts (default 0.3). */
+  sproutChance?: number;
+};
 
 /** A brand-new creature with no parents. `bias` lets themed visitors skew genes. */
 export function randomGenome(rng: Rng, bias: FounderBias = {}): Genome {
@@ -62,13 +68,15 @@ export function randomGenome(rng: Rng, bias: FounderBias = {}): Genome {
     const gen = bias[id] ?? (GENES[id] as GeneDef).founder ?? defaultFounder;
     genome[id] = [clamp01(gen(rng)), clamp01(gen(rng))];
   }
+  genome.sprouts = founderSprouts(rng, bias.sproutChance);
   return genome;
 }
 
 /** A true-breeding genome where both alleles equal the given values (the Lab uses this). */
-export function homozygousGenome(values: Expressed): Genome {
+export function homozygousGenome(values: Expressed, sprouts: SproutGene[] = []): Genome {
   const genome = {} as Genome;
   for (const id of GENE_IDS) genome[id] = [values[id], values[id]];
+  genome.sprouts = sprouts.map((g) => ({ ...g, dose: 2 }));
   return genome;
 }
 
@@ -116,6 +124,13 @@ export function breed(
       mutateAllele(id, fromFather, rng, driftRate, jumpRate, mutations),
     ];
   }
+  const r = DEFAULT_SPROUT_RATES;
+  const inherited = inheritSprouts(mother.sprouts, father.sprouts, rng, { drift: r.drift * boost, duplicate: r.duplicate * boost, lose: r.lose * boost, invent: r.invent * boost });
+  genome.sprouts = inherited.sprouts;
+  for (const event of inherited.events) {
+    const to = genome.sprouts.length;
+    mutations.push({ gene: 'sprouts', from: event === 'lost' ? to + 1 : to - 1, to, big: true });
+  }
   return { genome, mutations };
 }
 
@@ -133,6 +148,8 @@ export function reviveGenome(data: unknown, rng: Rng): Genome {
       fresh[id] = [clamp01(pair[0]), clamp01(pair[1])];
     }
   }
+  // Saves from before sprouts existed simply have none.
+  fresh.sprouts = reviveSprouts(raw.sprouts);
   return fresh;
 }
 
@@ -144,6 +161,10 @@ export function genomeSeed(genome: Genome): number {
       h ^= Math.floor(v * 65535);
       h = Math.imul(h, 16777619);
     }
+  }
+  for (const g of genome.sprouts) {
+    h ^= Math.floor(g.site * 65535) ^ Math.floor(g.length * 4095);
+    h = Math.imul(h, 16777619);
   }
   return h >>> 0;
 }

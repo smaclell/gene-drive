@@ -24,6 +24,9 @@ export interface Fruit {
 
 export interface Tree {
   kind: TreeKind;
+  group: THREE.Group;
+  /** 0 still … 1 shaking hard (a sky-neck is shaking it). Decays on its own. */
+  shake: number;
   x: number;
   z: number;
   /** How far from the trunk a creature stands to pick fruit. */
@@ -41,13 +44,27 @@ export interface FlowerPatch {
   baseScale: number[];
 }
 
+/** A hole a great digger left in the soil. Diggers like to nap in them. */
+export interface Burrow {
+  x: number;
+  z: number;
+  mesh: THREE.Group;
+  /** Fades away after this time. */
+  until: number;
+}
+
 export interface World {
   group: THREE.Group;
   trees: Tree[];
   flowers: FlowerPatch[];
+  burrows: Burrow[];
   water: THREE.Mesh;
   update: (time: number, dt: number) => void;
+  addBurrow: (x: number, z: number, time: number) => void;
 }
+
+const BURROW_SECONDS = 300;
+const MAX_BURROWS = 6;
 
 const FRUIT_REGROW_SECONDS = 50;
 
@@ -165,7 +182,7 @@ function buildTree(kind: TreeKind, p: Point, rng: Rng, withFruit: boolean): { gr
     }
   }
 
-  return { group, tree: { kind, x: p.x, z: p.z, standOff: canopyR * 0.9 + 0.4, fruits } };
+  return { group, tree: { kind, group, shake: 0, x: p.x, z: p.z, standOff: canopyR * 0.9 + 0.4, fruits } };
 }
 
 function buildFlowers(rng: Rng, spots: Point[]): { meshes: THREE.Object3D[]; patches: FlowerPatch[]; heads: THREE.InstancedMesh } {
@@ -362,8 +379,45 @@ export function buildWorld(seed = 1): World {
   const q = new THREE.Quaternion();
   const windowMat = cottage.userData.windowMat as THREE.MeshLambertMaterial;
 
+  const burrows: Burrow[] = [];
+  const holeMat = lambert(0x3b2a20);
+  const dirtMat = lambert(0x7a4e32);
+  const addBurrow = (x: number, z: number, time: number) => {
+    if (burrows.some((b) => Math.hypot(b.x - x, b.z - z) < 1.2)) return;
+    if (burrows.length >= MAX_BURROWS) {
+      const old = burrows.shift()!;
+      group.remove(old.mesh);
+    }
+    const mesh = new THREE.Group();
+    const hole = new THREE.Mesh(new THREE.CircleGeometry(0.42, 14), holeMat);
+    hole.rotation.x = -Math.PI / 2;
+    hole.position.y = 0.04;
+    const mound = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.13, 6, 14), dirtMat);
+    mound.rotation.x = -Math.PI / 2;
+    mound.scale.z = 0.6;
+    mound.castShadow = true;
+    mesh.add(hole, mound);
+    mesh.position.set(x, terrainHeight(x, z), z);
+    mesh.scale.setScalar(0.01);
+    group.add(mesh);
+    burrows.push({ x, z, mesh, until: time + BURROW_SECONDS });
+  };
+
   const update = (time: number, dt: number) => {
+    for (let i = burrows.length - 1; i >= 0; i--) {
+      const b = burrows[i];
+      const s = Math.min(1, (b.until - time) / 10);
+      b.mesh.scale.setScalar(THREE.MathUtils.lerp(b.mesh.scale.x, Math.max(0, s), Math.min(1, dt * 3)));
+      if (time > b.until) {
+        group.remove(b.mesh);
+        burrows.splice(i, 1);
+      }
+    }
     for (const tree of trees) {
+      if (tree.shake > 0.001) {
+        tree.shake = Math.max(0, tree.shake - dt * 0.7);
+        tree.group.rotation.set(Math.sin(time * 23) * 0.05 * tree.shake, 0, Math.cos(time * 19) * 0.05 * tree.shake);
+      }
       for (const fruit of tree.fruits) {
         if (!fruit.ripe && time >= fruit.regrowAt) fruit.ripe = true;
         const target = fruit.ripe ? 1 : 0;
@@ -395,7 +449,7 @@ export function buildWorld(seed = 1): World {
     windowMat.emissiveIntensity = 1;
   };
 
-  return { group, trees, flowers: flowers.patches, water, update };
+  return { group, trees, flowers: flowers.patches, burrows, water, update, addBurrow };
 }
 
 export function pickFruit(fruit: Fruit, time: number) {

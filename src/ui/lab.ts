@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { mulberry32 } from '../core/rng';
 import { buildCreature, type CreatureRig } from '../creature/build';
+import { GAIT_CADENCE, animate, restPose, restRig } from '../creature/motion';
 import { ABILITIES, ABILITY_IDS, computeAbilities, stars } from '../genetics/abilities';
-import { buildSkeleton } from '../genetics/anatomy';
+import { buildSkeleton, type Skeleton } from '../genetics/anatomy';
 import { discoveryById } from '../genetics/discoveries';
-import { GENES, GENE_IDS, GROUP_LABELS, type GeneGroup, type GeneId } from '../genetics/genes';
+import { GENES, GENE_IDS, GROUP_LABELS, geneDef, type GeneGroup, type GeneId } from '../genetics/genes';
 import { express, genomeSeed, homozygousGenome, randomGenome, type Expressed } from '../genetics/genome';
 import { randomName } from '../genetics/names';
-import { describePlan, planFromExpressed } from '../genetics/phenotype';
+import { describePlan, planFromExpressed, type BodyPlan } from '../genetics/phenotype';
+import { founderSprouts, MAX_SPROUTS, randomSprout, type SproutGene } from '../genetics/sprouts';
 import type { Creature } from '../sim/creature';
 import { LAB_COST, type Ranch } from '../sim/ranch';
 import { clear, h } from './dom';
@@ -28,7 +30,13 @@ export class Lab {
   private readonly camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
   private readonly turntable = new THREE.Group();
   private rig: CreatureRig | null = null;
+  private shown: { plan: BodyPlan; skel: Skeleton } | null = null;
   private values: Expressed = express(randomGenome(Math.random));
+  private sprouts: SproutGene[] = [];
+  private readonly sproutBox = h('div', { class: 'lab-sprouts' });
+  private readonly walkBtn = h('button', { class: 'chip-btn', title: 'Preview its gait' }, '🐾 Walk');
+  private walking = false;
+  private phase = 0;
   private dirty = true;
   private open = false;
   private frame = 0;
@@ -38,6 +46,10 @@ export class Lab {
     this.overlay = h('div', { class: 'lab-overlay', hidden: true });
     this.nameInput.addEventListener('keydown', (e) => e.stopPropagation());
     this.growBtn.addEventListener('click', () => this.grow());
+    this.walkBtn.addEventListener('click', () => {
+      this.walking = !this.walking;
+      this.walkBtn.classList.toggle('on', this.walking);
+    });
     const card = h('div', { class: 'lab-card' },
       h('div', { class: 'panel-head' },
         h('h2', {}, '🧪 Creature Lab'),
@@ -49,7 +61,9 @@ export class Lab {
           h('div', { class: 'lab-tools' },
             h('button', { class: 'chip-btn', onclick: () => this.randomise() }, '🎲 Randomise'),
             h('button', { class: 'chip-btn', onclick: () => this.mutateAll() }, '🧬 Nudge'),
+            this.walkBtn,
           ),
+          this.sproutBox,
           this.sliders,
           h('div', { class: 'lab-footer' }, this.nameInput, this.growBtn),
         ),
@@ -78,6 +92,7 @@ export class Lab {
   /** Open the Lab, optionally starting from an existing creature's look. */
   show(from?: Creature | null) {
     this.values = from ? { ...from.expressed } : express(randomGenome(Math.random));
+    this.sprouts = from && this.sproutsUnlocked ? from.genome.sprouts.map((g) => ({ ...g })) : [];
     this.nameInput.value = randomName(Math.random);
     this.applyLocks();
     this.open = true;
@@ -89,6 +104,7 @@ export class Lab {
       this.canvasBox.append(this.renderer.domElement);
     }
     this.buildSliders();
+    this.buildSproutTools();
     this.dirty = true;
     this.loop();
   }
@@ -101,15 +117,36 @@ export class Lab {
     this.onClose();
   }
 
+  private get sproutsUnlocked() {
+    return this.ranch.journal.has('sprouted');
+  }
+
   private locked(id: GeneId): string | null {
     const unlock = (GENES[id] as { unlockedBy?: string }).unlockedBy;
     if (!unlock || this.ranch.journal.has(unlock)) return null;
     return discoveryById(unlock)?.title ?? unlock;
   }
 
-  /** Locked genes are pinned low so their trait stays off. */
+  /** Locked genes are pinned low (or below `lockedMax`) so their rare trait stays off. */
   private applyLocks() {
-    for (const id of GENE_IDS) if (this.locked(id)) this.values[id] = Math.min(this.values[id], 0.2);
+    for (const id of GENE_IDS) if (this.locked(id)) this.values[id] = Math.min(this.values[id], geneDef(id).lockedMax ?? 0.2);
+  }
+
+  /** Sprout controls, once sprouts have been discovered. */
+  private buildSproutTools() {
+    clear(this.sproutBox);
+    if (!this.sproutsUnlocked) return;
+    const change = (fn: () => void) => () => {
+      fn();
+      this.buildSproutTools();
+      this.dirty = true;
+    };
+    this.sproutBox.append(
+      h('span', { class: 'small' }, `🌱 Sprouts: ${this.sprouts.length}/${MAX_SPROUTS}`),
+      h('button', { class: 'chip-btn', disabled: this.sprouts.length >= MAX_SPROUTS, onclick: change(() => this.sprouts.push(randomSprout(Math.random, 2))) }, '+ Grow one'),
+      h('button', { class: 'chip-btn', disabled: !this.sprouts.length, onclick: change(() => (this.sprouts = this.sprouts.map(() => randomSprout(Math.random, 2)))) }, '🎲 Reshape'),
+      h('button', { class: 'chip-btn', disabled: !this.sprouts.length, onclick: change(() => this.sprouts.pop()) }, '✂ Trim'),
+    );
   }
 
   private buildSliders() {
@@ -124,13 +161,14 @@ export class Lab {
       const section = h('fieldset', {}, h('legend', {}, GROUP_LABELS[group]));
       for (const id of ids) {
         const lock = this.locked(id);
-        const input = h('input', { type: 'range', min: 0, max: 1, step: 0.01, value: this.values[id], disabled: !!lock, 'aria-label': GENES[id].label });
+        const partial = lock ? geneDef(id).lockedMax : undefined;
+        const input = h('input', { type: 'range', min: 0, max: partial ?? 1, step: 0.01, value: this.values[id], disabled: !!lock && partial === undefined, 'aria-label': GENES[id].label });
         input.addEventListener('input', () => {
           this.values[id] = Number(input.value);
           this.dirty = true;
         });
         section.append(
-          h('label', { class: `slider ${lock ? 'locked' : ''}`, title: lock ? `Discover “${lock}” to unlock` : `${GENES[id].low} ↔ ${GENES[id].high}` },
+          h('label', { class: `slider ${lock && partial === undefined ? 'locked' : ''}`, title: lock ? `Discover “${lock}” to unlock ${partial === undefined ? 'this' : 'the rest of this'} slider` : `${GENES[id].low} ↔ ${GENES[id].high}` },
             h('span', {}, GENES[id].label, lock ? ' 🔒' : ''),
             input,
           ),
@@ -142,8 +180,10 @@ export class Lab {
 
   private randomise() {
     this.values = express(randomGenome(Math.random));
+    this.sprouts = this.sproutsUnlocked ? founderSprouts(Math.random, 0.5).map((g) => ({ ...g, dose: 2 as const })) : [];
     this.applyLocks();
     this.buildSliders();
+    this.buildSproutTools();
     this.dirty = true;
   }
 
@@ -158,7 +198,7 @@ export class Lab {
   }
 
   private grow() {
-    const err = this.ranch.growFromLab(homozygousGenome({ ...this.values }), this.nameInput.value.trim());
+    const err = this.ranch.growFromLab(homozygousGenome({ ...this.values }, this.sprouts), this.nameInput.value.trim());
     if (err) {
       this.growBtn.textContent = err;
       setTimeout(() => this.updateGrowButton(), 2000);
@@ -180,12 +220,12 @@ export class Lab {
       this.rig.root.removeFromParent();
       this.rig.dispose();
     }
-    const plan = planFromExpressed(this.values);
+    const plan = planFromExpressed(this.values, this.sprouts);
     const skel = buildSkeleton(plan);
     const abilities = computeAbilities(plan, skel);
-    this.rig = buildCreature(plan, skel, genomeSeed(homozygousGenome(this.values)));
-    // Rest pose: wings folded up.
-    for (const w of this.rig.wings) w.pivot.rotation.x = -w.side * 1.1;
+    this.rig = buildCreature(plan, skel, genomeSeed(homozygousGenome(this.values, this.sprouts)));
+    this.shown = { plan, skel };
+    restRig(this.rig, plan, skel);
     this.rig.root.position.x = -(skel.head.center.x + skel.tail[skel.tail.length - 1].x) / 2;
     this.turntable.add(this.rig.root);
     const size = Math.max(skel.length, skel.reach + 0.5);
@@ -222,6 +262,18 @@ export class Lab {
     if (this.dirty) this.rebuild();
     this.spin += 0.006;
     this.turntable.rotation.y = this.spin;
+    if (this.rig && this.shown) {
+      const time = performance.now() / 1000;
+      const { plan, skel } = this.shown;
+      if (this.walking) {
+        this.phase += (1 / 60) * Math.PI * 1.6 * GAIT_CADENCE[plan.gait];
+        animate(this.rig, plan, skel, {
+          time, phase: this.phase, moving: 1, swimming: false, flying: false, pose: restPose(), lookYaw: 0, happy: false, digging: false, foraging: false, blink: false, action: null,
+        });
+      } else {
+        restRig(this.rig, plan, skel, time);
+      }
+    }
     this.renderer.render(this.scene, this.camera);
   };
 }

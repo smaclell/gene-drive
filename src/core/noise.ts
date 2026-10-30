@@ -43,3 +43,28 @@ export function fbm2(x: number, y: number, octaves = 4, seed = 0): number {
   }
   return sum / norm;
 }
+
+/**
+ * 2D cellular (Worley) noise: distances to the nearest and second-nearest
+ * jittered grid point. `f2 - f1` is near 0 on cell borders (turtle-shell seams).
+ */
+export function cells2(x: number, y: number, seed = 0): { f1: number; f2: number } {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  let f1 = Infinity;
+  let f2 = Infinity;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const cx = xi + dx + hash3(xi + dx, yi + dy, 1, seed);
+      const cy = yi + dy + hash3(xi + dx, yi + dy, 2, seed);
+      const d = Math.hypot(x - cx, y - cy);
+      if (d < f1) {
+        f2 = f1;
+        f1 = d;
+      } else if (d < f2) {
+        f2 = d;
+      }
+    }
+  }
+  return { f1, f2 };
+}

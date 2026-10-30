@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
-/** Floating emoji labels, little particle bursts and the selection ring. */
+/** Floating emoji labels, little particle bursts, water ripples and the selection rings. */
 
 interface Emote {
   obj: CSS2DObject;
@@ -20,9 +20,18 @@ interface Particle {
   spin: number;
 }
 
+interface Ripple {
+  mesh: THREE.Mesh;
+  age: number;
+  life: number;
+  size: number;
+}
+
 export class Effects {
   private emotes: Emote[] = [];
   private particles: Particle[] = [];
+  private ripples: Ripple[] = [];
+  private readonly rippleGeo = new THREE.RingGeometry(0.8, 1, 32).rotateX(-Math.PI / 2);
   private readonly particleGeo = new THREE.IcosahedronGeometry(0.07, 0);
   private readonly materials = new Map<number, THREE.MeshLambertMaterial>();
   readonly ring: THREE.Mesh;
@@ -71,7 +80,27 @@ export class Effects {
     }
   }
 
+  /** An expanding ring on the water. */
+  ripple(at: THREE.Vector3, size = 1.5, life = 1.6) {
+    const mesh = new THREE.Mesh(this.rippleGeo, new THREE.MeshBasicMaterial({ color: 0xe8f7ff, transparent: true, opacity: 0.8, depthWrite: false }));
+    mesh.position.copy(at);
+    this.scene.add(mesh);
+    this.ripples.push({ mesh, age: 0, life, size });
+  }
+
   update(dt: number) {
+    for (let i = this.ripples.length - 1; i >= 0; i--) {
+      const r = this.ripples[i];
+      r.age += dt;
+      const t = r.age / r.life;
+      r.mesh.scale.setScalar(0.2 + t * r.size);
+      (r.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - t);
+      if (t >= 1) {
+        this.scene.remove(r.mesh);
+        (r.mesh.material as THREE.Material).dispose();
+        this.ripples.splice(i, 1);
+      }
+    }
     for (let i = this.emotes.length - 1; i >= 0; i--) {
       const e = this.emotes[i];
       e.age += dt;

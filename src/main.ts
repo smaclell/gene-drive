@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { Creature } from './sim/creature';
 import { Ranch } from './sim/ranch';
+import { CameraRig } from './ui/camera';
 import { Hud, type GameApi } from './ui/hud';
 import { Lab } from './ui/lab';
 import './ui/style.css';
@@ -29,7 +29,6 @@ app.append(labels.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 500);
-camera.position.set(16, 15, 24);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x6b8f4e, 1.3);
 scene.add(hemi);
@@ -45,14 +44,7 @@ const world = buildWorld(1);
 scene.add(world.group);
 const sky = createSky(scene, sun, hemi);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 1, 0);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.minDistance = 3;
-controls.maxDistance = 80;
-controls.maxPolarAngle = 1.42;
-controls.screenSpacePanning = false;
+const view = new CameraRig(camera, renderer.domElement, { minDistance: 4, maxDistance: 70, bounds: 45, groundAt: terrainHeight });
 
 const ranch = new Ranch(scene, world);
 
@@ -62,6 +54,19 @@ let selected: Creature | null = null;
 let breedingFrom: Creature | null = null;
 let follow = false;
 let speed = 1;
+// Moving the camera yourself always wins over follow mode.
+view.onUserMove = () => {
+  follow = false;
+};
+
+/** Start a picnic between the breeding creature and `partner`. */
+function breedWith(partner: Creature) {
+  if (!breedingFrom) return;
+  const err = ranch.breed(breedingFrom, partner);
+  if (err) hud.flash(err);
+  breedingFrom = null;
+  hud.refresh();
+}
 
 const game: GameApi = {
   ranch,
@@ -79,6 +84,7 @@ const game: GameApi = {
     breedingFrom = selected;
     hud.refresh();
   },
+  breedWith,
   cancelBreeding: () => {
     breedingFrom = null;
     hud.refresh();
@@ -87,6 +93,12 @@ const game: GameApi = {
   setFollow: (on) => {
     follow = on && !!selected;
   },
+  meet: (c) => {
+    game.select(c, true);
+    view.lookAt(c.x, c.z, Math.max(9, c.skeleton.length * 3));
+    ranch.poke(c);
+  },
+  home: () => view.home(),
   speed: () => speed,
   setSpeed: (s) => {
     speed = s;
@@ -102,6 +114,7 @@ const lab = new Lab(app, ranch, () => hud.refresh());
 ranch.onHatch = (c) => {
   if (!selected) game.select(c, true);
 };
+ranch.onMeet = (c) => game.meet(c);
 ranch.start();
 
 // ---- Picking ---------------------------------------------------------
@@ -112,7 +125,10 @@ let downAt: { x: number; y: number } | null = null;
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
   downAt = { x: e.clientX, y: e.clientY };
+  // Browsers allow sound only after a gesture.
+  ranch.voices.unlock();
 });
+window.addEventListener('keydown', () => ranch.voices.unlock(), { once: true });
 
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) return;
@@ -123,16 +139,11 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   const picked = ranch.find(hits[0]?.object.userData.creatureId as string | undefined) ?? null;
 
   if (breedingFrom) {
-    if (picked && picked !== breedingFrom) {
-      const err = ranch.breed(breedingFrom, picked);
-      if (err) hud.flash(err);
-      breedingFrom = null;
-      hud.refresh();
-    } else if (!picked) {
-      game.cancelBreeding();
-    }
+    if (picked && picked !== breedingFrom) breedWith(picked);
+    else if (!picked) game.cancelBreeding();
     return;
   }
+  if (picked) ranch.poke(picked);
   game.select(picked);
 });
 
@@ -174,8 +185,6 @@ document.addEventListener('visibilitychange', () => {
 
 const timer = new THREE.Timer();
 timer.connect(document);
-const followTarget = new THREE.Vector3();
-const delta = new THREE.Vector3();
 
 function placeRing(ring: THREE.Mesh, c: Creature | null) {
   ring.visible = !!c && !c.gone;
@@ -196,21 +205,10 @@ function frame() {
   sky.update(ranch.time);
   ranch.update(dt, sky.isNight());
 
-  if (follow && selected) {
-    followTarget.set(selected.x, selected.position.y + selected.skeleton.bodyHeight * selected.growth, selected.z);
-    delta.copy(followTarget).sub(controls.target).multiplyScalar(Math.min(1, realDt * 3));
-    controls.target.add(delta);
-    camera.position.add(delta);
-  }
-  // Keep the camera over the meadow.
-  const t = controls.target;
-  const d = Math.hypot(t.x, t.z);
-  if (d > 45) {
-    delta.set((t.x / d) * 45 - t.x, 0, (t.z / d) * 45 - t.z);
-    t.add(delta);
-    camera.position.add(delta);
-  }
-  controls.update();
+  if (follow && selected) view.lookAt(selected.x, selected.z);
+  view.update(realDt);
+  ranch.voices.listener.x = view.focus.x;
+  ranch.voices.listener.z = view.focus.z;
 
   placeRing(ranch.effects.ring, selected);
   placeRing(ranch.effects.partnerRing, breedingFrom && breedingFrom !== selected ? breedingFrom : null);

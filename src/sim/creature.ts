@@ -1,23 +1,27 @@
 import * as THREE from 'three';
 import { clamp, lerp, weightedPick } from '../core/rng';
 import { buildCreature, type CreatureRig } from '../creature/build';
+import { GAIT_CADENCE, animate, gaitSurge, restPose, type ActionKind } from '../creature/motion';
 import { canFly, computeAbilities, type Abilities } from '../genetics/abilities';
 import { buildSkeleton, type Skeleton } from '../genetics/anatomy';
 import { express, genomeSeed, type Expressed, type Genome } from '../genetics/genome';
-import { planFromExpressed, type BodyPlan } from '../genetics/phenotype';
+import { QUIRK_LABEL, planFromExpressed, type BodyPlan, type Food, type Quirk } from '../genetics/phenotype';
 import {
-  RANCH_RADIUS, WATER_LEVEL, clampToRanch, gatePoint, isWater, randomLandPoint, randomPondPoint, randomSoilPoint,
+  POND, RANCH_RADIUS, WATER_LEVEL, clampToRanch, gatePoint, isWater, randomLandPoint, randomPondPoint, randomSoilPoint,
   terrainHeight, type Point,
 } from '../world/layout';
-import { pickFruit, type FlowerPatch, type Tree } from '../world/scenery';
+import { pickFruit, type Burrow, type FlowerPatch, type Tree } from '../world/scenery';
 import type { Effects } from './effects';
+import type { Mood } from './voice';
 
 /**
  * A living creature on the ranch: genome-derived body plus a small task
- * machine. Abilities and temperament genes weight which tasks it picks.
+ * machine. Abilities and temperament genes weight which tasks it picks; the
+ * personality genes add a signature idle, a favourite food and a nap spot.
+ * Posing the meshes is left to `creature/motion.ts`.
  */
 
-export type Produce = 'fruit' | 'roots' | 'nectar' | 'shells';
+export type Produce = Food;
 
 export const PRODUCE: Record<Produce, { icon: string; label: string }> = {
   fruit: { icon: '🍎', label: 'Fruit' },
@@ -29,17 +33,27 @@ export const PRODUCE: Record<Produce, { icon: string; label: string }> = {
 export const PRODUCE_IDS = Object.keys(PRODUCE) as Produce[];
 
 /** Seconds for a hatchling to reach full size. */
-export const GROW_SECONDS = 150;
+export const GROW_SECONDS = 100;
 export const BABY_SCALE = 0.45;
+
+/** Ability levels where signature moves kick in. */
+const SHAKE_REACH = 0.75;
+const BURROW_DIG = 0.7;
+const DIVE_SWIM = 0.65;
+const ZOOM_SPEED = 0.8;
+const LOOP_FLY = 0.65;
 
 export interface CreatureContext {
   time: number;
   trees: Tree[];
   flowers: FlowerPatch[];
+  burrows: Burrow[];
   creatures: Creature[];
   isNight: boolean;
   effects: Effects;
   produce: (c: Creature, kind: Produce, amount: number) => void;
+  addBurrow: (x: number, z: number) => void;
+  call: (c: Creature, mood: Mood) => void;
 }
 
 /** What gets saved. Everything else is rebuilt from the genome. */
@@ -58,7 +72,7 @@ export interface CreatureRecord {
   origin: 'founder' | 'bred' | 'visitor' | 'lab';
 }
 
-type TaskKind = 'idle' | 'wander' | 'forage' | 'dig' | 'swim' | 'fly' | 'nap' | 'visit' | 'follow' | 'court' | 'arrive' | 'leave';
+type TaskKind = 'idle' | 'wander' | 'forage' | 'dig' | 'swim' | 'fly' | 'nap' | 'visit' | 'follow' | 'court' | 'arrive' | 'leave' | 'quirk' | 'zoom';
 
 interface Task {
   kind: TaskKind;
@@ -70,7 +84,9 @@ interface Task {
   tree?: Tree;
   flower?: FlowerPatch;
   friend?: Creature;
-  /** Extra hops (used by swimming). */
+  /** Napping inside a burrow. */
+  burrow?: Burrow;
+  /** Extra hops (swimming laps, zoomie waypoints). */
   laps?: number;
   /** One-shot flag for mid-task events. */
   fired?: boolean;
@@ -90,7 +106,12 @@ const STATUS: Record<TaskKind, string> = {
   court: 'Courting',
   arrive: 'Arriving',
   leave: 'Heading home',
+  quirk: 'Being silly',
+  zoom: 'Doing zoomies',
 };
+
+const QUIRK_SECONDS: Record<Quirk, number> = { stretch: 2.6, chase: 3, twirl: 1.6, dance: 3.6, roll: 3, sing: 3.4 };
+const QUIRK_EMOTE: Record<Quirk, string> = { stretch: '😌', chase: '🌀', twirl: '✨', dance: '🎶', roll: '🌼', sing: '🎵' };
 
 const rand = Math.random;
 const rr = (min: number, max: number) => min + (max - min) * rand();
@@ -128,14 +149,16 @@ export class Creature {
   gone = false;
 
   private task: Task | null = null;
+  private action: { kind: ActionKind; start: number; length: number } | null = null;
   private speed = 0;
   private walkPhase = rand() * 10;
   private altitude = 0;
   private y = 0;
+  private time = 0;
   private blinkAt = rand() * 4;
   private lookYaw = 0;
   private lookAt = 0;
-  private readonly pose = { drop: 0, pitch: 0, headPitch: 0, eyes: 1, fold: 0 };
+  private readonly pose = restPose();
 
   constructor(record: CreatureRecord) {
     this.id = record.id;
@@ -151,7 +174,7 @@ export class Creature {
     this.growth = clamp(record.growth, BABY_SCALE, 1);
     this.wild = record.wild;
     this.expressed = express(this.genome);
-    this.plan = planFromExpressed(this.expressed);
+    this.plan = planFromExpressed(this.expressed, this.genome.sprouts);
     this.skeleton = buildSkeleton(this.plan);
     this.abilities = computeAbilities(this.plan, this.skeleton);
     this.rig = buildCreature(this.plan, this.skeleton, genomeSeed(this.genome));
@@ -192,6 +215,10 @@ export class Creature {
     if ((this.task.kind === 'visit' || this.task.kind === 'follow') && this.task.friend) {
       return `${this.task.kind === 'visit' ? 'Visiting' : 'Following'} ${this.task.friend.name}`;
     }
+    if (this.task.kind === 'quirk') return QUIRK_LABEL[this.plan.quirk].status;
+    if (this.action?.kind === 'shake') return 'Shaking a tree';
+    if (this.action?.kind === 'dive') return 'Diving for shells';
+    if (this.task.kind === 'nap' && this.task.burrow) return 'Napping in a burrow';
     return STATUS[this.task.kind];
   }
 
@@ -219,9 +246,31 @@ export class Creature {
     this.task = null;
   }
 
+  /** Show off its signature idle right now (when the player says hello). */
+  showOff() {
+    if (this.task?.kind === 'court' || this.task?.kind === 'leave' || this.altitude > 0.5) return;
+    this.task = { kind: 'quirk', target: null, act: QUIRK_SECONDS[this.plan.quirk], elapsed: 0, arrived: true };
+    this.action = { kind: this.plan.quirk, start: this.time, length: QUIRK_SECONDS[this.plan.quirk] };
+  }
+
+  private startAction(kind: ActionKind, length: number) {
+    this.action = { kind, start: this.time, length };
+  }
+
+  /** Hand over produce; a favourite food is sometimes worth a bonus. */
+  private gather(kind: Produce, amount: number, ctx: CreatureContext) {
+    if (kind === this.plan.favourite && rand() < 0.3) {
+      amount += 1;
+      ctx.effects.emote('😋', this.rig.emoteAnchor, { life: 1.4 });
+    }
+    ctx.produce(this, kind, amount);
+  }
+
   update(dt: number, ctx: CreatureContext) {
+    this.time = ctx.time;
     if (this.growth < 1) this.growth = Math.min(1, this.growth + (dt / GROW_SECONDS) * (1 - BABY_SCALE));
     if (this.wild && ctx.time > this.leaveAt && this.task?.kind !== 'leave') this.leave();
+    if (this.action && ctx.time > this.action.start + this.action.length) this.endAction(ctx);
     if (!this.task) this.task = this.chooseTask(ctx);
     const task = this.task;
 
@@ -250,7 +299,12 @@ export class Creature {
         const turn = 2.6 * dt;
         this.heading = wrapAngle(this.heading + clamp(diff, -turn, turn));
         const takeoff = task.kind === 'fly' && this.altitude < 1 ? 0.25 : 1;
-        desiredSpeed = this.maxSpeed() * (0.25 + 0.75 * Math.max(0, Math.cos(diff))) * takeoff * Math.min(1, dist / 1.2 + 0.3);
+        const zoom = task.kind === 'zoom' ? 1.7 : 1;
+        desiredSpeed = this.maxSpeed() * zoom * (0.25 + 0.75 * Math.max(0, Math.cos(diff))) * takeoff * Math.min(1, dist / 1.2 + 0.3);
+        if (task.kind === 'fly' && !task.fired && this.abilities.fly >= LOOP_FLY && this.altitude > 1.8 && dist > 6 && rand() < dt * 0.5) {
+          task.fired = true;
+          this.startAction('loop', 1.4);
+        }
       }
     } else if (!task.target) {
       task.arrived = true;
@@ -266,11 +320,12 @@ export class Creature {
       }
     }
 
-    // Move.
-    const step = this.speed * dt;
+    // Move. Some gaits travel in surges (an inchworm pulls, then rests).
+    const flying = this.altitude > 0.4;
+    const step = this.speed * dt * (flying ? 1 : gaitSurge(this.plan.gait, this.walkPhase));
     this.x += Math.cos(this.heading) * step;
     this.z -= Math.sin(this.heading) * step;
-    this.walkPhase += (step / this.stride()) * Math.PI;
+    this.walkPhase += (step / this.stride()) * Math.PI * GAIT_CADENCE[this.plan.gait];
 
     // Personal space.
     if (this.altitude < 0.5) {
@@ -295,8 +350,24 @@ export class Creature {
       this.z = p.z;
     }
 
-    this.altitude = lerp(this.altitude, task.kind === 'fly' ? 2.2 + this.skeleton.bodyHeight * 0.3 : 0, Math.min(1, dt * 1.2));
+    const loop = this.action?.kind === 'loop' ? Math.sin(Math.PI * this.actionProgress()) * 1.5 : 0;
+    this.altitude = lerp(this.altitude, task.kind === 'fly' ? 2.2 + this.skeleton.bodyHeight * 0.3 + loop : 0, Math.min(1, dt * 1.2));
     this.syncRig(dt, ctx.time);
+  }
+
+  private actionProgress() {
+    return this.action ? clamp((this.time - this.action.start) / this.action.length, 0, 1) : 0;
+  }
+
+  private endAction(ctx: CreatureContext) {
+    if (this.action?.kind === 'dive') {
+      // Pop back up with a splash, sometimes holding a shell.
+      const at = new THREE.Vector3(this.x, WATER_LEVEL + 0.05, this.z);
+      ctx.effects.burst(at, 0xd8f1ff, 12, { speed: 1.4, up: 3, life: 0.8 });
+      ctx.effects.ripple(at, 2.2);
+      if (rand() < 0.6) this.gather('shells', 1, ctx);
+    }
+    this.action = null;
   }
 
   private maxSpeed() {
@@ -306,7 +377,41 @@ export class Creature {
   }
 
   private stride() {
-    return Math.max(0.3, (this.plan.legPairs > 0 ? this.plan.legLength : 0.5) * 0.9) * this.growth;
+    const s = this.skeleton;
+    const hip = s.legs[0]?.length ?? s.tentacles[0]?.length ?? 0.5 * s.scale;
+    return Math.max(0.25 * s.scale, hip * 0.9) * this.growth;
+  }
+
+  /** A good place to nap: by its favourite food, or in a burrow if it is a digger. */
+  private napSpot(ctx: CreatureContext): { at: Point; burrow?: Burrow } {
+    const here = { x: this.x, z: this.z };
+    const near = <T extends Point>(list: T[]) => list.reduce<T | null>((best, p) => (!best || Math.hypot(p.x - here.x, p.z - here.z) < Math.hypot(best.x - here.x, best.z - here.z) ? p : best), null);
+    if (this.abilities.dig >= BURROW_DIG) {
+      const b = near(ctx.burrows);
+      if (b) return { at: { x: b.x, z: b.z }, burrow: b };
+    }
+    switch (this.plan.favourite) {
+      case 'fruit': {
+        const t = near(ctx.trees);
+        if (t) {
+          const a = rand() * Math.PI * 2;
+          return { at: { x: t.x + Math.cos(a) * (t.standOff + 0.6), z: t.z + Math.sin(a) * (t.standOff + 0.6) } };
+        }
+        break;
+      }
+      case 'nectar': {
+        const f = near(ctx.flowers);
+        if (f) return { at: randomLandPoint(rand, f, 1.2) };
+        break;
+      }
+      case 'shells': {
+        const a = rand() * Math.PI * 2;
+        return { at: randomLandPoint(rand, { x: POND.x + Math.cos(a) * POND.r * 1.5, z: POND.z + Math.sin(a) * POND.r * 1.5 }, 1) };
+      }
+      case 'roots':
+        return { at: randomSoilPoint(rand) };
+    }
+    return { at: randomLandPoint(rand, here, 3) };
   }
 
   private chooseTask(ctx: CreatureContext): Task {
@@ -315,6 +420,16 @@ export class Creature {
     const p = this.plan;
     const a = this.abilities;
     const wanderTask = () => t('wander', randomLandPoint(rand, here, 4 + p.curiosity * 14), rr(0.5, 2));
+    const quirkTask = () => {
+      this.startAction(p.quirk, QUIRK_SECONDS[p.quirk]);
+      ctx.effects.emote(QUIRK_EMOTE[p.quirk], this.rig.emoteAnchor, { life: 1.6 });
+      if (p.quirk === 'sing') ctx.call(this, 'song');
+      return t('quirk', null, QUIRK_SECONDS[p.quirk]);
+    };
+    const napTask = (seconds: number) => {
+      const spot = this.napSpot(ctx);
+      return t('nap', spot.at, seconds, { burrow: spot.burrow });
+    };
 
     if (this.wild) {
       return weightedPick(rand, [
@@ -325,18 +440,21 @@ export class Creature {
 
     if (!this.adult) {
       const parent = ctx.creatures.find((c) => this.parentIds?.includes(c.id) && !c.gone);
-      return weightedPick(rand, [
-        { item: parent ? t('follow', null, rr(1, 3), { friend: parent }) : wanderTask(), weight: 1.6 },
-        { item: wanderTask(), weight: 0.6 },
-        { item: t('idle', null, rr(1.5, 4)), weight: 0.6 },
-        { item: t('nap', null, rr(6, 12)), weight: ctx.isNight ? 1.5 : 0.25 },
+      const pick = weightedPick<() => Task>(rand, [
+        { item: () => (parent ? t('follow', null, rr(1, 3), { friend: parent }) : wanderTask()), weight: 1.6 },
+        { item: wanderTask, weight: 0.6 },
+        { item: () => t('idle', null, rr(1.5, 4)), weight: 0.6 },
+        { item: quirkTask, weight: 0.25 },
+        { item: () => t('nap', null, rr(6, 12)), weight: ctx.isNight ? 1.5 : 0.25 },
       ])!;
+      return pick();
     }
 
     const options: { item: () => Task; weight: number }[] = [
       { item: wanderTask, weight: 0.8 + p.curiosity * 0.6 },
       { item: () => t('idle', null, rr(2, 5)), weight: 0.5 },
-      { item: () => t('nap', null, ctx.isNight ? rr(14, 24) : rr(7, 12)), weight: (0.15 + (1 - p.energy) * 0.4) * (ctx.isNight ? 4 : 1) },
+      { item: quirkTask, weight: 0.18 + p.energy * 0.12 },
+      { item: () => napTask(ctx.isNight ? rr(14, 24) : rr(7, 12)), weight: (0.15 + (1 - p.energy) * 0.4) * (ctx.isNight ? 4 : 1) },
     ];
 
     // Forage: highest fruit we can reach, so tall creatures leave the low fruit for the little ones.
@@ -367,6 +485,15 @@ export class Creature {
 
     options.push({ item: () => t('dig', randomSoilPoint(rand), 4.5, { tick: 0 }), weight: 0.1 + a.dig * 1.3 });
     options.push({ item: () => t('swim', randomPondPoint(rand), 1, { laps: 2 + Math.floor(rand() * 3) }), weight: 0.05 + a.swim * 1.3 });
+    if (a.speed >= ZOOM_SPEED) {
+      options.push({
+        item: () => {
+          ctx.effects.emote('💨', this.rig.emoteAnchor, { life: 1.2 });
+          return t('zoom', randomLandPoint(rand, here, 10), 0.2, { laps: 3, tick: 0 });
+        },
+        weight: 0.15 + p.energy * 0.2,
+      });
+    }
 
     if (this.flies) {
       const free = ctx.flowers.filter((f) => f.busyUntil < ctx.time);
@@ -393,14 +520,32 @@ export class Creature {
         if (task.tree) this.face(task.tree.x, task.tree.z, dt);
         if (!task.fired && task.elapsed > 1.2 && task.tree) {
           task.fired = true;
+          const tree = task.tree;
+          const ripe = tree.fruits.filter((f) => f.ripe);
+          // Signature move: a sky-neck shakes the whole tree and catches what falls.
+          if (this.abilities.reach >= SHAKE_REACH && ripe.length >= 2 && rand() < 0.4) {
+            tree.shake = 1;
+            this.startAction('shake', 1.5);
+            task.act = 3;
+            const fallen = ripe.sort(() => rand() - 0.5).slice(0, 3);
+            for (const fruit of fallen) {
+              const at = new THREE.Vector3();
+              fruit.mesh.getWorldPosition(at);
+              fx.burst(at, (fruit.mesh.material as THREE.MeshToonMaterial).color.getHex(), 4, { speed: 1, up: 0.5 });
+              pickFruit(fruit, ctx.time);
+            }
+            fx.burst(new THREE.Vector3(tree.x, terrainHeight(tree.x, tree.z) + 3, tree.z), 0x6fb35a, 14, { speed: 2, up: 1, gravity: 3, life: 1.4 });
+            this.gather('fruit', fallen.length, ctx);
+            break;
+          }
           const reach = this.reachHeight + 0.1;
-          const fruit = task.tree.fruits.filter((f) => f.ripe && f.height <= reach).sort((x, y) => y.height - x.height)[0];
+          const fruit = ripe.filter((f) => f.height <= reach).sort((x, y) => y.height - x.height)[0];
           if (fruit) {
             pickFruit(fruit, ctx.time);
             const at = new THREE.Vector3();
             fruit.mesh.getWorldPosition(at);
             fx.burst(at, (fruit.mesh.material as THREE.MeshToonMaterial).color.getHex(), 6, { speed: 0.8, up: 1.5 });
-            ctx.produce(this, 'fruit', 1);
+            this.gather('fruit', 1, ctx);
           } else {
             fx.emote('❓', this.rig.emoteAnchor);
             task.elapsed = task.act;
@@ -425,6 +570,20 @@ export class Creature {
           task.target = randomPondPoint(rand);
           task.arrived = false;
           task.elapsed = 0;
+          // Signature move: strong swimmers dive for shells.
+          if (this.abilities.swim >= DIVE_SWIM && !this.action && rand() < 0.35) {
+            this.startAction('dive', 1.8);
+            fx.ripple(new THREE.Vector3(this.x, WATER_LEVEL + 0.05, this.z), 1.6);
+          }
+        }
+        break;
+      }
+      case 'zoom': {
+        if ((task.laps ?? 0) > 0) {
+          task.laps! -= 1;
+          task.target = randomLandPoint(rand, { x: this.x, z: this.z }, 9);
+          task.arrived = false;
+          task.elapsed = 0;
         }
         break;
       }
@@ -443,6 +602,12 @@ export class Creature {
         }
         break;
       }
+      case 'quirk': {
+        // Spinning quirks turn the whole creature.
+        if (this.plan.quirk === 'chase') this.heading = wrapAngle(this.heading + dt * 5);
+        if (this.plan.quirk === 'twirl') this.heading = wrapAngle(this.heading + dt * ((Math.PI * 2) / QUIRK_SECONDS.twirl));
+        break;
+      }
       case 'leave': {
         if ((task.laps ?? 0) > 0) {
           task.laps! -= 1;
@@ -458,6 +623,7 @@ export class Creature {
         if (!task.fired) {
           task.fired = true;
           fx.emote('💕', this.rig.emoteAnchor, { life: 2.2 });
+          ctx.call(this, 'happy');
         }
         break;
       }
@@ -465,7 +631,10 @@ export class Creature {
         if (task.friend) this.face(task.friend.x, task.friend.z, dt);
         if (!task.fired && task.friend) {
           task.fired = true;
-          if (this.plan.sociability > 0.45) fx.emote('❤️', this.rig.emoteAnchor);
+          if (this.plan.sociability > 0.45) {
+            fx.emote('❤️', this.rig.emoteAnchor);
+            ctx.call(this, 'hello');
+          }
         }
         break;
       }
@@ -480,12 +649,14 @@ export class Creature {
       case 'dig': {
         let found = rand() < 0.35 + 0.65 * a.dig ? 1 : 0;
         if (a.dig > 0.7 && rand() < 0.5) found++;
-        if (found) ctx.produce(this, 'roots', found);
+        if (found) this.gather('roots', found, ctx);
         else ctx.effects.emote('…', this.rig.emoteAnchor);
+        // Signature move: great diggers leave a burrow to nap in later.
+        if (a.dig >= BURROW_DIG && rand() < 0.45) ctx.addBurrow(this.x, this.z);
         break;
       }
       case 'swim': {
-        if (rand() < 0.3 + 0.7 * a.swim) ctx.produce(this, 'shells', a.swim > 0.65 && rand() < 0.4 ? 2 : 1);
+        if (rand() < 0.3 + 0.7 * a.swim) this.gather('shells', a.swim > 0.65 && rand() < 0.4 ? 2 : 1, ctx);
         break;
       }
       case 'fly': {
@@ -493,7 +664,7 @@ export class Creature {
           task.flower.bloom = 1;
           ctx.effects.burst(new THREE.Vector3(task.flower.x, terrainHeight(task.flower.x, task.flower.z) + 0.8, task.flower.z), 0xfff1a8, 10, { speed: 1.2, up: 1.5, gravity: 1, life: 1.4, size: 0.7 });
         }
-        ctx.produce(this, 'nectar', a.fly > 0.7 ? 2 : 1);
+        this.gather('nectar', a.fly > 0.7 ? 2 : 1, ctx);
         break;
       }
       default:
@@ -507,7 +678,7 @@ export class Creature {
     this.heading = wrapAngle(this.heading + clamp(diff, -2.5 * dt, 2.5 * dt));
   }
 
-  /** Apply position, pose and procedural animation to the meshes. */
+  /** Apply position and pose; `motion.ts` does the procedural animation. */
   private syncRig(dt: number, time = 0) {
     const rig = this.rig;
     const p = this.plan;
@@ -515,23 +686,25 @@ export class Creature {
     const task = this.task;
     const acting = !!task?.arrived;
     const kind = task?.kind ?? 'idle';
-    const moving = clamp(this.speed / 1.2, 0, 1);
+    const progress = this.actionProgress();
 
-    // Height: ground, water surface, or sky.
+    // Height: ground, water surface, burrow, or sky.
     const ground = terrainHeight(this.x, this.z);
     let baseY = ground;
     const inWater = isWater(this.x, this.z);
     if (inWater) baseY = Math.max(ground, WATER_LEVEL - s.bodyHeight * this.growth * 0.8);
+    if (this.action?.kind === 'dive') baseY -= Math.sin(Math.PI * progress) * s.bodyHeight * this.growth * 1.6;
+    if (acting && kind === 'nap' && task?.burrow) baseY -= s.bodyHeight * this.growth * 0.6;
     baseY += this.altitude;
     this.y = dt > 0 ? lerp(this.y, baseY, Math.min(1, dt * 8)) : baseY;
 
     rig.root.position.set(this.x, this.y, this.z);
     rig.root.rotation.y = this.heading;
     rig.scaler.scale.setScalar(this.growth);
-    rig.head.scale.setScalar(1 + (1 - this.growth) * 0.6);
+    for (const h of rig.heads) h.scale.setScalar(1 + (1 - this.growth) * 0.6);
 
-    // Pose targets.
-    const target = { drop: 0, pitch: 0, headPitch: 0, eyes: 1, fold: 0 };
+    // Pose targets, eased toward.
+    const target = restPose();
     if (acting && kind === 'forage') {
       target.pitch = 0.1;
       target.headPitch = 0.5;
@@ -539,67 +712,38 @@ export class Creature {
       target.pitch = -0.2;
       target.headPitch = -0.55;
     } else if (acting && kind === 'nap') {
-      target.drop = p.legPairs > 0 ? s.bodyHeight - p.girth * 0.8 : 0.05;
+      target.drop = p.legPairs > 0 ? s.bodyHeight - p.girth * s.scale * 0.8 : 0.05;
       target.headPitch = -0.25;
       target.eyes = 0.08;
       target.fold = 1;
     } else if (kind === 'fly' && this.altitude > 0.4) {
       target.pitch = acting ? 0.05 : -0.08;
     }
+    target.wingOpen = kind === 'fly' ? 1 : 0;
     const k = Math.min(1, dt * 4);
     for (const key of Object.keys(target) as (keyof typeof target)[]) this.pose[key] = lerp(this.pose[key], target[key], k);
-    const pose = this.pose;
 
     // Look around when idle.
     if (time > this.lookAt) {
       this.lookAt = time + rr(1.5, 4);
       this.lookYaw = kind === 'idle' || kind === 'wander' ? rr(-0.6, 0.6) : 0;
     }
-
-    const swimming = inWater && this.altitude < 0.3;
-    const flying = this.altitude > 0.4;
-    const gaitPhase = swimming ? time * 6 : this.walkPhase;
-    const swing = (flying ? 0 : swimming ? 0.6 : 0.55 * moving) * (1 - pose.fold);
-    const bob = swimming ? Math.sin(time * 2) * 0.04 : Math.abs(Math.sin(this.walkPhase)) * 0.05 * moving * (p.legPairs > 0 ? p.legLength : 0.4);
-    const digJitter = acting && kind === 'dig' ? Math.sin(time * 30) * 0.03 : 0;
-
-    rig.body.position.set(digJitter, -pose.drop + bob, 0);
-    rig.body.rotation.z = pose.pitch + (flying ? Math.sin(time * 2) * 0.04 : 0);
-    rig.body.rotation.x = Math.sin(this.walkPhase) * 0.03 * moving;
-    rig.body.scale.set(1, 1 + Math.sin(time * 2.2) * 0.015, 1);
-
-    if (p.legPairs === 0) {
-      // Legless: wriggle along.
-      rig.body.rotation.y = Math.sin(this.walkPhase * 0.8) * 0.14 * moving;
-      rig.body.scale.x = 1 + Math.sin(this.walkPhase * 1.6) * 0.06 * moving;
-    } else {
-      rig.body.rotation.y = 0;
-    }
-
-    rig.head.rotation.z = pose.headPitch + (acting && kind === 'forage' ? Math.sin(time * 8) * 0.06 : 0);
-    rig.head.rotation.y = lerp(rig.head.rotation.y, this.lookYaw, Math.min(1, dt * 2));
-
-    const happy = kind === 'visit' || kind === 'court' || kind === 'follow';
-    rig.tail.rotation.y = Math.sin(time * (happy ? 9 : 2.5) + this.walkPhase * 0.3) * (happy ? 0.45 : 0.18);
-    rig.tail.rotation.z = Math.sin(time * 1.3) * 0.06;
-
-    const frontHalf = Math.max(1, p.legPairs) / 2;
-    for (const leg of rig.legs) {
-      const offset = (leg.pair % 2 === 0 ? 0 : Math.PI) + (leg.side === 1 ? 0 : Math.PI);
-      const ph = gaitPhase + offset;
-      const fold = (leg.pair < frontHalf ? 1.35 : -1.35) * pose.fold;
-      const dangle = flying ? -0.35 + Math.sin(time * 3 + leg.pair) * 0.08 : 0;
-      leg.hip.rotation.z = Math.sin(ph) * swing + fold + dangle;
-      leg.knee.rotation.z = -Math.max(0, Math.cos(ph)) * swing * 1.1 - (flying ? 0.5 : 0) - pose.fold * 0.2;
-    }
-
-    const flap = flying ? 0.25 + Math.sin(time * 14) * 0.8 : kind === 'fly' ? 0.6 + Math.sin(time * 9) * 0.5 : 1.15 + Math.sin(time * 1.3) * 0.06;
-    for (const w of rig.wings) w.pivot.rotation.x = -w.side * flap;
-
-    // Blink.
     if (time > this.blinkAt + 0.13) this.blinkAt = time + rr(2, 6);
-    const blink = time > this.blinkAt ? 0.1 : 1;
-    for (const eye of rig.eyes) eye.scale.y = Math.max(0.06, pose.eyes * blink);
+
+    animate(rig, p, s, {
+      time,
+      phase: this.walkPhase,
+      moving: clamp(this.speed / 1.2, 0, 1),
+      swimming: inWater && this.altitude < 0.3,
+      flying: this.altitude > 0.4,
+      pose: this.pose,
+      lookYaw: this.lookYaw,
+      happy: kind === 'visit' || kind === 'court' || kind === 'follow',
+      digging: acting && kind === 'dig',
+      foraging: acting && kind === 'forage',
+      blink: time > this.blinkAt,
+      action: this.action ? { kind: this.action.kind, t: progress } : null,
+    });
   }
 
   dispose() {

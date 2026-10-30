@@ -6,8 +6,10 @@ import { DISCOVERIES } from '../src/genetics/discoveries';
 import { GENES, GENE_IDS } from '../src/genetics/genes';
 import { breed, express, expressGene, homozygousGenome, randomGenome, reviveGenome, type Genome } from '../src/genetics/genome';
 import { childName, randomName } from '../src/genetics/names';
-import { describePlan, planFromGenome } from '../src/genetics/phenotype';
-import { hatchReport } from '../src/genetics/report';
+import { GAIT_LABEL, describePlan, gaitFor, planFromExpressed, planFromGenome, type Gait } from '../src/genetics/phenotype';
+import { hatchReport, offspringOdds } from '../src/genetics/report';
+import { MAX_SPROUTS, describeSprout, inheritSprouts, randomSprout, reviveSprouts } from '../src/genetics/sprouts';
+import { VISITOR_THEMES, themeBias } from '../src/sim/visitors';
 
 const withGene = (base: Genome, id: keyof Genome, pair: [number, number]): Genome => ({ ...base, [id]: pair });
 
@@ -146,5 +148,168 @@ describe('hatch report', () => {
     const report = hatchReport(view(child), [view(parent), view(parent)], []);
     expect(report.surprises).toContain('wings');
     expect(report.beyond).toContain(GENES.neckLength.high);
+  });
+});
+
+describe('milestone 2 bodies', () => {
+  const base = () => express(randomGenome(mulberry32(60)));
+
+  it('scales the whole skeleton with size', () => {
+    const e = base();
+    const small = planFromExpressed({ ...e, size: 0 });
+    const big = planFromExpressed({ ...e, size: 1 });
+    const s = buildSkeleton(small);
+    const b = buildSkeleton(big);
+    const ratio = big.size / small.size;
+    expect(b.length / s.length).toBeCloseTo(ratio, 1);
+    expect(b.mass / s.mass / ratio ** 3).toBeCloseTo(1, 2);
+    expect(computeAbilities(big, b).reach).toBeGreaterThanOrEqual(computeAbilities(small, s).reach);
+  });
+
+  it('lets tiny creatures fly where huge ones cannot', () => {
+    const e = { ...base(), wings: 0.8, girth: 0.6, bodyLength: 0.6 };
+    const tiny = planFromExpressed({ ...e, size: 0.05 });
+    const huge = planFromExpressed({ ...e, size: 0.95 });
+    expect(computeAbilities(tiny, buildSkeleton(tiny)).fly).toBeGreaterThan(computeAbilities(huge, buildSkeleton(huge)).fly);
+  });
+
+  it('only picks gaits the body allows', () => {
+    for (let g = 0; g <= 1; g += 0.05) {
+      expect(['inch', 'slither', 'bounce']).toContain(gaitFor(g, 0, 'straight', 3));
+      expect(gaitFor(g, 0, 'tentacles', 2)).toBe('creep');
+      expect(['waddle', 'walk', 'prance', 'hop']).toContain(gaitFor(g, 1, 'straight', 2));
+      expect(['walk', 'scuttle']).toContain(gaitFor(g, 4, 'splayed', 2));
+    }
+  });
+
+  it('can reach every gait from random founders', () => {
+    const rng = mulberry32(61);
+    const seen = new Set<Gait>();
+    for (let i = 0; i < 4000 && seen.size < Object.keys(GAIT_LABEL).length; i++) {
+      seen.add(planFromGenome(randomGenome(rng, themeBias(VISITOR_THEMES[i % VISITOR_THEMES.length], rng))).gait);
+    }
+    expect([...seen].sort()).toEqual(Object.keys(GAIT_LABEL).sort());
+  });
+
+  it('keeps every tail above the grass', () => {
+    const rng = mulberry32(62);
+    for (let i = 0; i < 400; i++) {
+      const s = buildSkeleton(planFromGenome(randomGenome(rng)));
+      for (const p of s.tail) expect(p.y).toBeGreaterThan(0.1);
+      expect(s.tailRadii).toHaveLength(s.tail.length);
+    }
+  });
+
+  it('treats shell, twin tails and second heads as recessive', () => {
+    const g = homozygousGenome(base());
+    for (const gene of ['shell', 'twinTail', 'twinHead'] as const) {
+      const carrier = withGene(g, gene, [0.95, 0.1]);
+      const both = withGene(g, gene, [0.95, 0.95]);
+      const key = gene === 'shell' ? 'shell' : gene;
+      expect(planFromGenome(carrier)[key]).toBe(false);
+      expect(planFromGenome(both)[key]).toBe(true);
+    }
+  });
+
+  it('builds legless tentacled bodies on a skirt of tentacles', () => {
+    const p = planFromExpressed({ ...base(), legPairs: 0, legStyle: 1 });
+    const s = buildSkeleton(p);
+    expect(p.legPairs).toBe(0);
+    expect(s.legs).toHaveLength(0);
+    expect(s.tentacles.length).toBeGreaterThan(0);
+    expect(describePlan(p)).toContain('tentacle');
+  });
+
+  it('describes how a creature moves', () => {
+    const p = planFromGenome(randomGenome(mulberry32(63)));
+    expect(describePlan(p)).toContain(GAIT_LABEL[p.gait].verb);
+  });
+
+  it('pushes Curio visitors to extremes', () => {
+    const rng = mulberry32(64);
+    let extremes = 0;
+    for (let i = 0; i < 40; i++) {
+      const e = express(randomGenome(rng, themeBias(VISITOR_THEMES.find((t) => t.id === 'curio')!, rng)));
+      extremes += GENE_IDS.filter((id) => GENES[id].expression === 'blend' && (e[id] < 0.1 || e[id] > 0.9)).length;
+    }
+    expect(extremes / 40).toBeGreaterThan(4);
+  });
+});
+
+describe('offspring odds', () => {
+  it('predicts recessive surprises from two carriers', () => {
+    const g = homozygousGenome(express(randomGenome(mulberry32(70))));
+    const carrier = withGene(withGene(g, 'wings', [0.95, 0.1]), 'glow', [0.1, 0.1]);
+    const odds = offspringOdds(carrier, carrier, 600);
+    const wings = odds.find((o) => o.category === 'wings')!;
+    const chance = wings.outcomes.find((o) => o.value === 'wings')?.chance ?? 0;
+    expect(chance).toBeGreaterThan(0.18);
+    expect(chance).toBeLessThan(0.32);
+    expect(offspringOdds(carrier, carrier, 600)).toEqual(odds);
+    for (const o of odds) expect(o.outcomes.reduce((sum, x) => sum + x.chance, 0)).toBeCloseTo(1);
+  });
+});
+
+describe('sprouts', () => {
+  const none = { drift: 0, duplicate: 0, lose: 0, invent: 0 };
+
+  it('always passes a double-dose sprout and pairs matching ones', () => {
+    const g = randomSprout(mulberry32(80), 2);
+    for (let i = 0; i < 20; i++) {
+      const { sprouts } = inheritSprouts([g], [], mulberry32(81 + i), none);
+      expect(sprouts).toHaveLength(1);
+    }
+    const single = { ...g, dose: 1 as const };
+    let paired = 0;
+    for (let i = 0; i < 200; i++) {
+      const { sprouts } = inheritSprouts([single], [single], mulberry32(200 + i), none);
+      expect(sprouts.length).toBeLessThanOrEqual(1);
+      if (sprouts[0]?.dose === 2) paired++;
+    }
+    // Both parents pass it a quarter of the time.
+    expect(paired / 200).toBeGreaterThan(0.15);
+    expect(paired / 200).toBeLessThan(0.35);
+  });
+
+  it('lets the sprout list grow and shrink', () => {
+    const rng = mulberry32(90);
+    const parent = [randomSprout(rng, 2), randomSprout(rng, 2)];
+    const counts = new Set<number>();
+    for (let i = 0; i < 300; i++) counts.add(inheritSprouts(parent, parent, rng, { drift: 0.1, duplicate: 0.3, lose: 0.3, invent: 0.2 }).sprouts.length);
+    expect(Math.min(...counts)).toBeLessThan(2);
+    expect(Math.max(...counts)).toBeGreaterThan(2);
+    for (const n of counts) expect(n).toBeLessThanOrEqual(MAX_SPROUTS);
+  });
+
+  it('logs sprout changes as mutations', () => {
+    const a = { ...randomGenome(mulberry32(91)), sprouts: [randomSprout(mulberry32(92), 2)] };
+    let logged = 0;
+    for (let i = 0; i < 50; i++) logged += breed(a, a, mulberry32(300 + i), { mutationBoost: 8 }).mutations.filter((m) => m.gene === 'sprouts').length;
+    expect(logged).toBeGreaterThan(0);
+  });
+
+  it('survives saving, and old saves without sprouts load with none', () => {
+    const g = { ...randomGenome(mulberry32(93)), sprouts: [randomSprout(mulberry32(94))] };
+    expect(reviveGenome(JSON.parse(JSON.stringify(g)), mulberry32(1))).toEqual(g);
+    const old = JSON.parse(JSON.stringify(g)) as Record<string, unknown>;
+    delete old.sprouts;
+    expect(reviveGenome(old, mulberry32(1)).sprouts).toEqual([]);
+    expect(reviveSprouts([{ site: 'x' }, null, 3])).toEqual([]);
+  });
+
+  it('lays out every sprout on the body with a real size', () => {
+    const rng = mulberry32(95);
+    for (let i = 0; i < 100; i++) {
+      const genome = { ...randomGenome(rng), sprouts: [randomSprout(rng), randomSprout(rng)] };
+      const plan = planFromGenome(genome);
+      const s = buildSkeleton(plan);
+      const expected = plan.sprouts.reduce((n, sp) => n + sp.repeat * (sp.mirrored ? 2 : 1), 0);
+      expect(s.sprouts).toHaveLength(expected);
+      for (const l of s.sprouts) {
+        expect(l.length).toBeGreaterThan(0);
+        expect(Math.hypot(l.dir.x, l.dir.y, l.dir.z)).toBeCloseTo(1);
+      }
+      expect(describeSprout(plan.sprouts[0])).toMatch(/ on its /);
+    }
   });
 });

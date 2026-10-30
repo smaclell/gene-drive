@@ -1,10 +1,12 @@
 import { ABILITIES, ABILITY_IDS, FLIGHT_THRESHOLD, stars } from '../genetics/abilities';
-import { DISCOVERIES } from '../genetics/discoveries';
+import { DISCOVERIES, JOURNAL_SECTIONS } from '../genetics/discoveries';
 import { GENES, GENE_IDS, GROUP_LABELS, RECESSIVE_THRESHOLD, type GeneGroup, type GeneId } from '../genetics/genes';
-import { describePlan } from '../genetics/phenotype';
+import { GAIT_LABEL, NAP_SPOT, QUIRK_LABEL, TIMBRE_LABEL, describePlan } from '../genetics/phenotype';
+import { TRAIT_NONE, offspringOdds, type TraitOdds } from '../genetics/report';
+import { describeSprout } from '../genetics/sprouts';
 import type { Creature } from '../sim/creature';
 import { PRODUCE, PRODUCE_IDS } from '../sim/creature';
-import { HERD_CAP, WELCOME_COST, type Ranch, type Toast } from '../sim/ranch';
+import { HERD_CAP, VISITOR_RATES, WELCOME_COST, type Ranch, type Toast, type VisitorRate } from '../sim/ranch';
 import { VISITOR_THEMES } from '../sim/visitors';
 import type { Sky } from '../world/sky';
 import { clear, h, hslCss } from './dom';
@@ -18,6 +20,12 @@ export interface GameApi {
   breedingFrom: () => Creature | null;
   startBreeding: () => void;
   cancelBreeding: () => void;
+  /** Picnic between the creature in breeding mode and this partner. */
+  breedWith: (partner: Creature) => void;
+  /** Select, fly the camera over and say hello. */
+  meet: (c: Creature) => void;
+  /** Recentre the camera over the ranch. */
+  home: () => void;
   following: () => boolean;
   setFollow: (on: boolean) => void;
   speed: () => number;
@@ -44,10 +52,15 @@ export class Hud {
   private readonly toasts = h('div', { class: 'toasts' });
   private readonly banner = h('div', { class: 'banner', hidden: true });
   private readonly speedBtn = h('button', { class: 'chip-btn', title: 'Game speed' });
+  private readonly soundBtn = h('button', { class: 'chip-btn', title: 'Creature voices' });
   private panelFor: Creature | null = null;
+  /** Partner highlighted in the breeding picker, for the odds preview. */
+  private preview: Creature | null = null;
+  private pickerSig = '';
   private panelDynamic: { status: HTMLElement; breed: HTMLElement; growth: HTMLElement; follow: HTMLButtonElement } | null = null;
   private drawerMode: Drawer = null;
   private tickTimer = 0;
+  private readonly staleToasts = new Map<HTMLElement, () => boolean>();
 
   constructor(parent: HTMLElement, private readonly game: GameApi) {
     const btn = (label: string, title: string, onClick: () => void, cls = 'chip-btn') => h('button', { class: cls, title, onclick: onClick }, label);
@@ -55,6 +68,10 @@ export class Hud {
       const next = this.game.speed() === 1 ? 3 : 1;
       this.game.setSpeed(next);
       this.refreshTop();
+    });
+    this.soundBtn.addEventListener('click', () => {
+      this.game.ranch.voices.unlock();
+      this.game.ranch.setMuted(!this.game.ranch.settings.muted);
     });
     const top = h(
       'header',
@@ -68,6 +85,8 @@ export class Hud {
         btn('🐾 Herd', 'Your herd (H)', () => this.toggleDrawer('herd')),
         btn('📖 Journal', 'Discoveries (J)', () => this.toggleDrawer('journal')),
         btn('🧪 Lab', 'Design a creature (L)', () => this.game.openLab()),
+        btn('🏠', 'Recentre the camera (Home)', () => this.game.home()),
+        this.soundBtn,
         this.speedBtn,
         btn('?', 'How to play', () => this.toggleDrawer('help')),
       ),
@@ -85,8 +104,12 @@ export class Hud {
   refresh() {
     this.refreshTop();
     const sel = this.game.selected();
-    if (sel !== this.panelFor || (sel && sel.wild !== (this.panel.dataset.wild === '1'))) this.renderPanel(sel);
-    else if (sel) this.renderPanelName(sel);
+    const breeding = this.game.breedingFrom() === sel && !!sel;
+    if (sel !== this.panelFor || (sel && sel.wild !== (this.panel.dataset.wild === '1')) || breeding !== (this.panel.dataset.breeding === '1')) this.renderPanel(sel);
+    else if (sel) {
+      this.renderPanelName(sel);
+      if (breeding) this.renderPicker(sel);
+    }
     this.renderBanner();
     if (this.drawerMode) this.renderDrawer();
   }
@@ -105,8 +128,17 @@ export class Hud {
       const wait = Math.ceil(sel.breedReadyAt - ranch.time);
       this.panelDynamic.breed.textContent = sel.wild ? '' : !sel.adult ? 'Too young to breed' : wait > 0 ? `Resting · ready in ${wait}s` : 'Ready to breed';
       this.panelDynamic.follow.classList.toggle('on', this.game.following());
+      if (this.game.breedingFrom() === sel) this.renderPicker(sel);
     }
     if (this.drawerMode === 'herd') this.renderDrawer();
+    for (const [el, stale] of this.staleToasts) {
+      if (!el.isConnected) this.staleToasts.delete(el);
+      else if (stale()) {
+        this.staleToasts.delete(el);
+        el.classList.add('leaving');
+        setTimeout(() => el.remove(), 300);
+      }
+    }
   }
 
   private refreshTop() {
@@ -118,6 +150,7 @@ export class Hud {
     this.herdCount.textContent = `${ranch.herdSize}/${HERD_CAP}`;
     this.herdCount.title = 'Herd size (including eggs)';
     this.speedBtn.textContent = this.game.speed() === 1 ? '▶ 1×' : '⏩ 3×';
+    this.soundBtn.textContent = ranch.settings.muted ? '🔇' : '🔊';
   }
 
   private renderBanner() {
@@ -126,7 +159,7 @@ export class Hud {
     clear(this.banner);
     if (!from) return;
     this.banner.append(
-      h('span', {}, `💕 Pick a partner for ${from.name} · picnic costs ${this.game.ranch.breedCost} produce`),
+      h('span', {}, `💕 Pick a partner for ${from.name}: from the list, or click one · picnic costs ${this.game.ranch.breedCost}`),
       h('button', { class: 'chip-btn', onclick: () => this.game.cancelBreeding() }, 'Cancel'),
     );
   }
@@ -143,8 +176,12 @@ export class Hud {
     clear(this.panel);
     this.panelDynamic = null;
     this.panel.hidden = !c;
+    this.preview = null;
+    this.pickerSig = '';
     if (!c) return;
     this.panel.dataset.wild = c.wild ? '1' : '0';
+    const breeding = this.game.breedingFrom() === c;
+    this.panel.dataset.breeding = breeding ? '1' : '0';
     const { ranch } = this.game;
     const p = c.plan;
 
@@ -166,10 +203,12 @@ export class Hud {
     const actions = h('div', { class: 'actions' });
     if (c.wild) {
       actions.append(h('button', { class: 'primary', onclick: () => this.flash(ranch.welcome(c)) }, `🏡 Welcome (${WELCOME_COST})`));
+    } else if (breeding) {
+      actions.append(h('button', { class: 'primary', onclick: () => this.game.cancelBreeding() }, 'Cancel picnic'));
     } else {
       actions.append(h('button', { class: 'primary', title: 'Breed (B)', onclick: () => this.game.startBreeding() }, '💕 Breed…'));
     }
-    actions.append(follow);
+    actions.append(follow, h('button', { class: 'chip-btn', title: 'Say hi', onclick: () => ranch.poke(c) }, '👋'));
     if (!c.wild) {
       actions.append(
         h('button', {
@@ -208,12 +247,64 @@ export class Hud {
       h('div', { class: 'meta' }, h('span', { class: 'tag' }, c.wild ? 'Wild visitor' : `Gen ${c.generation}`), h('span', {}, lineage)),
       h('div', { class: 'meta' }, status, growth, breedState),
       h('p', { class: 'describe' }, describePlan(p)),
+      this.traits(c),
       actions,
+      ...(breeding ? [h('div', { class: 'picker' })] : []),
       h('h3', {}, 'Abilities'),
       abilities,
       this.genomeSection(c),
     );
     this.panelDynamic = { status, breed: breedState, growth, follow };
+    if (breeding) this.renderPicker(c);
+  }
+
+  /** Personality at a glance: gait, voice, quirk, favourite food, sprouts. */
+  private traits(c: Creature): HTMLElement {
+    const p = c.plan;
+    const chip = (icon: string, text: string, title: string) => h('span', { class: 'trait', title }, `${icon} ${text}`);
+    const box = h('div', { class: 'traits' },
+      chip('🐾', GAIT_LABEL[p.gait].noun, `Gait: it ${GAIT_LABEL[p.gait].verb}.`),
+      chip('🎵', TIMBRE_LABEL[p.voice.timbre], 'Voice. Bigger creatures have deeper voices.'),
+      chip('💫', QUIRK_LABEL[p.quirk].blurb, 'Signature quirk. Say hi to see it.'),
+      chip(PRODUCE[p.favourite].icon, `loves ${PRODUCE[p.favourite].label.toLowerCase()}`, `Sometimes brings back extra ${PRODUCE[p.favourite].label.toLowerCase()}, and naps ${NAP_SPOT[p.favourite]}.`),
+    );
+    if (p.sprouts.length) box.append(h('span', { class: 'trait wide', title: 'Sprouts: extra parts whose genes can copy themselves or vanish when bred.' }, `🌱 ${p.sprouts.map(describeSprout).join('; ')}`));
+    return box;
+  }
+
+  /** The breeding picker: every possible partner, plus odds for the highlighted one. */
+  private renderPicker(c: Creature) {
+    const box = this.panel.querySelector<HTMLElement>('.picker');
+    if (!box) return;
+    const { ranch } = this.game;
+    const partners = ranch.herd.filter((o) => o !== c && !o.gone);
+    const blockers = partners.map((o) => ranch.breedBlocker(c, o));
+    const sig = partners.map((o, i) => `${o.id}:${blockers[i]}`).join('|') + `|${this.preview?.id}|${ranch.produceTotal}`;
+    if (sig === this.pickerSig) return;
+    this.pickerSig = sig;
+    clear(box);
+    box.append(h('h3', {}, 'Choose a partner'), h('p', { class: 'small muted' }, `A picnic costs ${ranch.breedCost} produce (you have ${ranch.produceTotal}). Tap a name to see what babies might look like.`));
+    const list = h('ul', { class: 'partner-list' });
+    partners.forEach((o, i) => {
+      const blocker = blockers[i];
+      const state = !o.adult ? 'growing up' : o.breedReadyAt > ranch.time ? 'resting' : 'ready';
+      list.append(
+        h('li', { class: o === this.preview ? 'active' : '', onclick: () => {
+          this.preview = this.preview === o ? null : o;
+          this.renderPicker(c);
+        } },
+          h('span', { class: 'swatch', style: `background:${hslCss(o.plan.colour.body)};border-color:${hslCss(o.plan.colour.accent)}` }),
+          h('span', { class: 'herd-name' }, o.name, h('span', { class: 'muted small' }, ` · ${state}`)),
+          h('button', { class: 'primary small-btn', disabled: !!blocker, title: blocker ?? `Picnic with ${o.name}`, onclick: (e: Event) => {
+            e.stopPropagation();
+            this.game.breedWith(o);
+          } }, '💕'),
+        ),
+      );
+    });
+    if (!partners.length) list.append(h('li', { class: 'muted' }, 'No one else on the ranch yet. Welcome a visitor!'));
+    box.append(list);
+    if (this.preview && partners.includes(this.preview)) box.append(oddsView(c, this.preview));
   }
 
   private genomeSection(c: Creature): HTMLElement {
@@ -273,9 +364,13 @@ export class Hud {
     const sorted = [...ranch.creatures].sort((a, b) => Number(a.wild) - Number(b.wild) || b.generation - a.generation || a.name.localeCompare(b.name));
     for (const c of sorted) {
       list.append(
-        h('li', { class: c === sel ? 'active' : '', onclick: () => this.game.select(c, true) },
+        h('li', { class: c === sel ? 'active' : '', onclick: () => {
+          const from = this.game.breedingFrom();
+          if (from && c !== from && !c.wild) this.game.breedWith(c);
+          else this.game.meet(c);
+        } },
           h('span', { class: 'swatch', style: `background:${hslCss(c.plan.colour.body)};border-color:${hslCss(c.plan.colour.accent)}` }),
-          h('span', { class: 'herd-name' }, c.name, c.adult ? '' : ' 🍼', c.wild ? ' 🌿' : ''),
+          h('span', { class: 'herd-name' }, c.name, c.adult ? '' : ' 🍼', c.wild ? ' 🌿' : '', c.plan.sprouts.length ? ' 🌱' : ''),
           h('span', { class: 'muted small' }, c.wild ? 'visitor' : `G${c.generation} · ${c.status}`),
         ),
       );
@@ -287,19 +382,26 @@ export class Hud {
   private renderJournal(close: HTMLElement) {
     const { ranch } = this.game;
     const found = DISCOVERIES.filter((d) => ranch.journal.has(d.id)).length;
-    const grid = h('div', { class: 'journal' });
-    for (const d of DISCOVERIES) {
-      const has = ranch.journal.has(d.id);
-      const unlocks = GENE_IDS.filter((id) => (GENES[id] as { unlockedBy?: string }).unlockedBy === d.id).map((id) => GENES[id].label);
-      grid.append(
-        h('div', { class: `entry ${has ? 'found' : ''}` },
-          h('strong', {}, has ? d.title : '???'),
-          h('span', { class: 'small muted' }, d.hint),
-          unlocks.length ? h('span', { class: 'small unlock' }, `${has ? '🔓' : '🔒'} Lab: ${unlocks.join(', ')}`) : null,
-        ),
-      );
+    const body = h('div', {});
+    for (const section of JOURNAL_SECTIONS) {
+      const entries = DISCOVERIES.filter((d) => d.section === section);
+      const grid = h('div', { class: 'journal' });
+      for (const d of entries) {
+        const has = ranch.journal.has(d.id);
+        const unlocks = GENE_IDS.filter((id) => (GENES[id] as { unlockedBy?: string }).unlockedBy === d.id).map((id) => GENES[id].label);
+        grid.append(
+          h('div', { class: `entry ${has ? 'found' : ''}` },
+            h('strong', {}, has ? d.title : '???'),
+            h('span', { class: 'small muted' }, d.hint),
+            unlocks.length ? h('span', { class: 'small unlock' }, `${has ? '🔓' : '🔒'} Lab: ${unlocks.join(', ')}`) : null,
+            d.id === 'sprouted' ? h('span', { class: 'small unlock' }, `${has ? '🔓' : '🔒'} Lab: sprouts`) : null,
+          ),
+        );
+      }
+      const count = entries.filter((d) => ranch.journal.has(d.id)).length;
+      body.append(h('h3', {}, `${section} · ${count}/${entries.length}`), grid);
     }
-    this.drawer.append(h('div', { class: 'panel-head' }, h('h2', {}, `📖 Journal · ${found}/${DISCOVERIES.length}`), close), grid);
+    this.drawer.append(h('div', { class: 'panel-head' }, h('h2', {}, `📖 Journal · ${found}/${DISCOVERIES.length}`), close), body);
   }
 
   private renderHelp(close: HTMLElement) {
@@ -309,12 +411,16 @@ export class Hud {
         h('p', {}, 'Every creature is grown from its genome. Its body decides what it can do: long necks reach high fruit, big feet dig, tails and fins swim, and wings that are big enough let it fly.'),
         h('ul', {},
           h('li', {}, 'Click a creature to see its abilities and genome.'),
-          h('li', {}, 'Breed two adults with a picnic of produce. Babies mix both parents, and sometimes mutate.'),
-          h('li', {}, 'Wings and glow are recessive. Two carriers can surprise you.'),
+          h('li', {}, 'Breed two adults with a picnic of produce. The partner list shows what their babies might look like.'),
+          h('li', {}, 'Wings, glow, shells, twin tails and second heads are recessive. Two carriers can surprise you.'),
+          h('li', {}, 'Sprouts are extra parts whose genes can copy themselves, vanish, or appear out of nowhere.'),
           h('li', {}, 'Wild visitors bring new genes. Welcome them before they wander off.'),
           h('li', {}, 'Fill the Journal to unlock Lab sliders for designing your own.'),
         ),
-        h('p', { class: 'small muted' }, 'Drag to orbit · right-drag to pan · scroll to zoom · Esc deselects · B breed · F follow · H herd · J journal · L lab'),
+        h('p', { class: 'small muted' }, 'Drag to move around · right-drag or Q/E to turn · scroll or pinch to zoom · WASD or arrows to pan · Home recentres'),
+        h('p', { class: 'small muted' }, 'Click a creature to say hi · Esc deselects · B breed · F follow · H herd · J journal · L lab'),
+        h('h3', {}, 'Settings'),
+        this.visitorSetting(),
         h('button', {
           class: 'chip-btn subtle',
           onclick: () => {
@@ -331,21 +437,22 @@ export class Hud {
   // ---- Toasts --------------------------------------------------------
 
   toast(t: Toast) {
+    const buttons = h('div', { class: 'toast-actions' });
     const el = h('div', { class: 'toast' },
       t.icon ? h('span', { class: 'toast-icon' }, t.icon) : null,
-      h('div', { class: 'toast-body' }, h('div', {}, t.text), t.detail ? h('div', { class: 'small muted' }, t.detail) : null),
+      h('div', { class: 'toast-body' }, h('div', {}, t.text), t.detail ? h('div', { class: 'small muted' }, t.detail) : null, buttons),
     );
+    if (t.stale) this.staleToasts.set(el, t.stale);
     const dismiss = () => {
       el.classList.add('leaving');
       setTimeout(() => el.remove(), 300);
     };
-    if (t.action) {
-      const action = t.action;
-      el.append(h('button', {
+    for (const action of [...(t.action ? [t.action] : []), ...(t.actions ?? [])]) {
+      buttons.append(h('button', {
         class: 'primary small-btn',
         onclick: () => {
           action.run();
-          dismiss();
+          if (!action.keep) dismiss();
         },
       }, action.label));
     }
@@ -356,6 +463,18 @@ export class Hud {
     if (life > 0) setTimeout(dismiss, life * 1000);
   }
 
+  private visitorSetting(): HTMLElement {
+    const { ranch } = this.game;
+    const row = h('div', { class: 'setting' }, h('span', {}, 'Wild visitors'));
+    for (const rate of Object.keys(VISITOR_RATES) as VisitorRate[]) {
+      row.append(h('button', {
+        class: `chip-btn ${ranch.settings.visitors === rate ? 'on' : ''}`,
+        onclick: () => ranch.setVisitorRate(rate),
+      }, VISITOR_RATES[rate].label));
+    }
+    return row;
+  }
+
   /** Show an error string from a game action, if any. */
   flash(message: string | null) {
     if (message) this.toast({ icon: '💭', text: message, life: 4 });
@@ -364,4 +483,35 @@ export class Hud {
   get drawerOpen(): Drawer {
     return this.drawerMode;
   }
+}
+
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+/** Genomes never change, so a pair's odds can be worked out once. */
+const oddsCache = new Map<string, TraitOdds[]>();
+
+/** Odds for a pair, showing only traits that are still up in the air. */
+function oddsView(a: Creature, b: Creature): HTMLElement {
+  const key = `${a.id}|${b.id}`;
+  const odds = oddsCache.get(key) ?? offspringOdds(a.genome, b.genome);
+  oddsCache.set(key, odds);
+  const rows: HTMLElement[] = [];
+  for (const o of odds) {
+    if (o.outcomes[0].chance >= 0.97) continue;
+    const shown = o.outcomes.filter((x) => x.chance >= 0.03).slice(0, 3);
+    const yesNo = o.outcomes.length === 2 && o.outcomes.some((x) => !x.value);
+    const text = yesNo
+      ? (() => {
+        const yes = o.outcomes.find((x) => x.value)!;
+        return `${pct(yes.chance)} ${yes.value}`;
+      })()
+      : shown.map((x) => `${x.value || TRAIT_NONE[o.category] || 'none'} ${pct(x.chance)}`).join(' · ');
+    rows.push(h('div', { class: 'odds-row' }, h('span', { class: 'muted' }, o.label), h('span', {}, text)));
+  }
+  return h('div', { class: 'odds' },
+    h('h3', {}, `Babies with ${b.name}`),
+    ...(rows.length ? rows.slice(0, 10) : [h('p', { class: 'small muted' }, 'These two breed true: babies will look a lot like them.')]),
+    rows.length > 10 ? h('p', { class: 'small muted' }, `…and ${rows.length - 10} more traits that could go either way.`) : null,
+    h('p', { class: 'small muted' }, 'Colours and sizes blend. Mutations can still surprise you.'),
+  );
 }

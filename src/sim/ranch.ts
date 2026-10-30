@@ -11,30 +11,62 @@ import { gatePoint, randomLandPoint, terrainHeight } from '../world/layout';
 import type { World } from '../world/scenery';
 import { BABY_SCALE, Creature, PRODUCE, PRODUCE_IDS, type CreatureRecord, type Produce } from './creature';
 import { Effects } from './effects';
-import { VISITOR_THEMES, pickTheme } from './visitors';
+import { VISITOR_THEMES, pickTheme, themeBias } from './visitors';
+import { Voices, type Mood } from './voice';
 
 /**
  * The ranch: owns the herd, eggs, produce, visitors and the Journal, and
  * persists them. UI talks to the game through this class.
  */
 
-export const HERD_CAP = 24;
+export const HERD_CAP = 30;
 export const WELCOME_COST = 3;
 export const LAB_COST = 15;
-const HATCH_SECONDS = 12;
-const BREED_COOLDOWN = 50;
-const VISITOR_STAY = 80;
+const HATCH_SECONDS = 10;
+/** Seconds a parent rests after laying an egg. */
+const BREED_COOLDOWN = 30;
+/** Seconds a wild visitor waits to be welcomed. */
+const VISITOR_STAY = 120;
+/** Seconds between visitors at the default rate, before charm shortens it. */
+const VISITOR_GAP: [number, number] = [150, 240];
 const SAVE_KEY = 'gene-drive-save-v1';
+/** Settings survive "Start a new ranch", so they live under their own key. */
+const SETTINGS_KEY = 'gene-drive-settings-v1';
+
+export type VisitorRate = 'often' | 'sometimes' | 'rarely' | 'off';
+
+export const VISITOR_RATES: Record<VisitorRate, { label: string; factor: number }> = {
+  often: { label: 'Often', factor: 0.5 },
+  sometimes: { label: 'Sometimes', factor: 1 },
+  rarely: { label: 'Rarely', factor: 2.5 },
+  off: { label: 'Never', factor: Infinity },
+};
+
+export interface Settings {
+  visitors: VisitorRate;
+  muted: boolean;
+}
 
 export type Resources = Record<Produce, number>;
+
+export interface ToastAction {
+  label: string;
+  run: () => void;
+  /** Keep the toast open after the button is pressed. */
+  keep?: boolean;
+}
 
 export interface Toast {
   text: string;
   detail?: string;
   icon?: string;
-  action?: { label: string; run: () => void };
+  action?: ToastAction;
+  /** More buttons, shown after `action`. */
+  actions?: ToastAction[];
   /** Seconds before it fades; 0 keeps it until dismissed. */
   life?: number;
+  /** Closes the toast early once this returns true (e.g. the visitor left). */
+  stale?: () => boolean;
 }
 
 interface Egg {
@@ -72,13 +104,17 @@ export class Ranch {
   time = 75;
   labFreeUsed = false;
   isNight = false;
+  readonly voices = new Voices();
+  settings: Settings = loadSettings();
   /** Hooks the UI fills in. */
   onToast: (t: Toast) => void = () => {};
   onChange: () => void = () => {};
   onHatch: (c: Creature) => void = () => {};
+  /** Ask the UI to select (and follow) a creature. */
+  onMeet: (c: Creature) => void = () => {};
 
   private readonly rng: Rng = Math.random;
-  private nextVisitorAt = 60;
+  private nextVisitorAt = 120;
   private readonly herdGroup = new THREE.Group();
   private readonly eggGeo = new THREE.SphereGeometry(0.32, 18, 14);
   private saveTimer = 0;
@@ -102,14 +138,16 @@ export class Ranch {
     this.resources = { fruit: 4, roots: 2, nectar: 0, shells: 1 };
     this.time = 75;
     this.labFreeUsed = false;
-    this.nextVisitorAt = this.time + 45;
+    this.nextVisitorAt = this.time + 120;
     const seed = Math.floor(Math.random() * 1e9);
-    const themes = ['meadow', 'meadow', 'marsh', 'highland'];
+    // Three familiar founders and one from further afield, so every ranch starts a little different.
+    const far = ['burrow', 'sky', 'glimmer', 'reef', 'grove', 'dune', 'curio'];
+    const themes = ['meadow', 'marsh', 'highland', far[Math.floor(Math.random() * far.length)]];
     themes.forEach((id, i) => {
       const theme = VISITOR_THEMES.find((t) => t.id === id)!;
       const rng = mulberry32(seed + i * 7919);
       const p = randomLandPoint(rng, { x: 0, z: 0 }, 9);
-      this.add({ id: makeId(), name: randomName(rng), genome: randomGenome(rng, theme.bias), generation: 1, parents: null, x: p.x, z: p.z, growth: 1, wild: false, theme: theme.id, origin: 'founder' }, false);
+      this.add({ id: makeId(), name: randomName(rng), genome: randomGenome(rng, themeBias(theme, rng)), generation: 1, parents: null, x: p.x, z: p.z, growth: 1, wild: false, theme: theme.id, origin: 'founder' }, false);
     });
     this.save();
   }
@@ -118,14 +156,18 @@ export class Ranch {
     this.time += dt;
     this.isNight = isNight;
     this.world.update(this.time, dt);
+    this.voices.muted = this.settings.muted;
     const ctx = {
       time: this.time,
       trees: this.world.trees,
       flowers: this.world.flowers,
+      burrows: this.world.burrows,
       creatures: this.creatures,
       isNight,
       effects: this.effects,
       produce: (c: Creature, kind: Produce, amount: number) => this.produce(c, kind, amount),
+      addBurrow: (x: number, z: number) => this.world.addBurrow(x, z, this.time),
+      call: (c: Creature, mood: Mood) => this.voices.call(c.plan, mood, c),
     };
     for (const c of this.creatures) c.update(dt, ctx);
     for (const c of this.creatures.filter((c) => c.gone)) {
@@ -181,6 +223,12 @@ export class Ranch {
     this.onChange();
   }
 
+  /** The player says hello: the creature answers and shows off its quirk. */
+  poke(c: Creature) {
+    this.voices.call(c.plan, 'hello', c, true);
+    if (!c.wild) c.showOff();
+  }
+
   rename(c: Creature, name: string) {
     const clean = name.trim().slice(0, 16);
     if (clean) c.name = clean;
@@ -212,7 +260,7 @@ export class Ranch {
   // ---- Breeding --------------------------------------------------------
 
   get breedCost() {
-    return 3 + Math.floor(this.herdSize / 4);
+    return 2 + Math.floor(this.herdSize / 5);
   }
 
   /** Why these two cannot breed right now, or null if they can. */
@@ -315,7 +363,8 @@ export class Ranch {
       ],
       egg.mutations,
     );
-    this.onToast({ icon: '🐣', text: `${baby.name} hatched!`, detail: describeReport(report), life: 9 });
+    this.voices.call(baby.plan, 'surprise', baby);
+    this.onToast({ icon: '🐣', text: `${baby.name} hatched!`, detail: describeReport(report), life: 10, action: { label: 'Say hi', run: () => this.onMeet(baby) } });
     this.onHatch(baby);
     this.onChange();
   }
@@ -326,27 +375,62 @@ export class Ranch {
     return this.creatures.find((c) => c.wild && !c.gone && c.leaveAt !== Infinity);
   }
 
+  /** Seconds until the next visitor: slower by default, a little faster with a charming herd. */
+  private visitorGap() {
+    const charm = Math.min(6, this.herd.reduce((s, c) => s + c.abilities.charm, 0));
+    const [lo, hi] = VISITOR_GAP;
+    return ((lo + Math.random() * (hi - lo)) * VISITOR_RATES[this.settings.visitors].factor) / (1 + charm * 0.05);
+  }
+
   private updateVisitors() {
     if (this.time < this.nextVisitorAt) return;
-    const charm = this.herd.reduce((s, c) => s + c.abilities.charm, 0);
-    this.nextVisitorAt = this.time + (70 + Math.random() * 60) / (1 + charm * 0.15);
+    this.nextVisitorAt = this.time + this.visitorGap();
     if (this.visitor || this.herdSize >= HERD_CAP) return;
     this.spawnVisitor();
+  }
+
+  // ---- Settings --------------------------------------------------------
+
+  setVisitorRate(rate: VisitorRate) {
+    this.settings.visitors = rate;
+    this.nextVisitorAt = this.time + this.visitorGap();
+    this.saveSettings();
+    this.onChange();
+  }
+
+  setMuted(muted: boolean) {
+    this.settings.muted = muted;
+    this.voices.muted = muted;
+    this.saveSettings();
+    this.onChange();
+  }
+
+  private saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
+    } catch {
+      // Storage can be unavailable; settings just won't stick.
+    }
   }
 
   spawnVisitor() {
     const rng = mulberry32(Math.floor(Math.random() * 1e9));
     const theme = pickTheme(rng);
     const p = gatePoint(12);
-    const c = this.add({ id: makeId(), name: randomName(rng), genome: randomGenome(rng, theme.bias), generation: 1, parents: null, x: p.x, z: p.z, growth: 1, wild: true, theme: theme.id, origin: 'visitor' });
+    const c = this.add({ id: makeId(), name: randomName(rng), genome: randomGenome(rng, themeBias(theme, rng)), generation: 1, parents: null, x: p.x, z: p.z, growth: 1, wild: true, theme: theme.id, origin: 'visitor' });
     c.heading = Math.PI;
     c.leaveAt = this.time + VISITOR_STAY;
     c.arrive();
+    this.voices.call(c.plan, 'hello', null);
     this.onToast({
       icon: '🌿',
       text: `A wild ${theme.title} visitor, ${c.name}, ${theme.flavour}.`,
       detail: `Welcome it for ${WELCOME_COST} produce, or let it wander off.`,
-      action: { label: `Welcome (${WELCOME_COST})`, run: () => this.welcome(c) },
+      actions: [
+        { label: 'Take a look', run: () => this.onMeet(c), keep: true },
+        { label: `Welcome (${WELCOME_COST})`, run: () => this.welcome(c) },
+      ],
+      stale: () => c.gone || !c.wild,
       life: VISITOR_STAY,
     });
     this.onChange();
@@ -408,7 +492,7 @@ export class Ranch {
         x: e.x, z: e.z, hatchIn: Math.max(1, e.hatchAt - this.time), name: e.name, generation: e.generation,
       })),
       labFreeUsed: this.labFreeUsed,
-      visitorIn: Math.max(10, this.nextVisitorAt - this.time),
+      visitorIn: Math.max(30, Math.min(600, this.nextVisitorAt - this.time)),
     };
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -431,7 +515,7 @@ export class Ranch {
     for (const k of PRODUCE_IDS) this.resources[k] = Math.max(0, Math.floor(data.resources?.[k] ?? 0));
     for (const id of data.journal ?? []) this.journal.add(id);
     this.labFreeUsed = !!data.labFreeUsed;
-    this.nextVisitorAt = this.time + (data.visitorIn ?? 45);
+    this.nextVisitorAt = this.time + (data.visitorIn ?? 120);
     for (const r of data.creatures) {
       this.add({ ...r, genome: reviveGenome(r.genome, rng), wild: false, origin: r.origin ?? 'founder' }, false);
     }
@@ -449,6 +533,19 @@ export class Ranch {
     }
     this.newGame();
     this.onChange();
+  }
+}
+
+function loadSettings(): Settings {
+  const fallback: Settings = { visitors: 'sometimes', muted: false };
+  try {
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as Partial<Settings> | null;
+    return {
+      visitors: raw?.visitors && raw.visitors in VISITOR_RATES ? raw.visitors : fallback.visitors,
+      muted: !!raw?.muted,
+    };
+  } catch {
+    return fallback;
   }
 }
 
