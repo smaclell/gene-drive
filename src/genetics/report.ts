@@ -1,7 +1,7 @@
 import { mulberry32 } from '../core/rng';
 import { GENES, GENE_IDS, type GeneId } from './genes';
 import { breed, genomeSeed, type Expressed, type Genome, type Mutation } from './genome';
-import { GAIT_LABEL, isCentaur, isUpright, planFromGenome, type BodyPlan } from './phenotype';
+import { GAIT_LABEL, hasFishLips, hasTrunk, isCentaur, isUpright, planFromGenome, shownTeeth, shownTongue, type BodyPlan } from './phenotype';
 
 /**
  * Explains genetics in player terms:
@@ -35,6 +35,8 @@ export const TRAIT_CATEGORIES = {
   ears: 'Ears',
   horns: 'Horns',
   mouth: 'Mouth',
+  teeth: 'Teeth',
+  tongue: 'Tongue',
   head: 'Head',
   pattern: 'Pattern',
   finish: 'Finish',
@@ -54,13 +56,15 @@ export type TraitCategory = keyof typeof TRAIT_CATEGORIES;
 
 /** How to say "nothing special" for a category, where an empty label would read badly. */
 export const TRAIT_NONE: Partial<Record<TraitCategory, string>> = {
-  size: 'medium build', legStyle: 'plain legs', arms: 'no arms', stance: 'low stance', horns: 'no horns', mouth: 'plain mouth', head: 'round face', finish: 'plain finish',
+  size: 'medium build', legStyle: 'plain legs', arms: 'no arms', stance: 'low stance', horns: 'no horns', mouth: 'plain mouth', teeth: 'no teeth showing', tongue: 'tongue tucked in', head: 'round face', finish: 'plain finish',
   tail: 'plain tail', fluff: 'no fluff', sprouts: 'no sprouts', build: 'plain build', neck: 'a neck', texture: 'smooth skin',
 };
 
 const TAIL_WORD = { plain: '', whip: 'a whip tail', curl: 'a curly tail', club: 'a club tail', fan: 'a fan tail' } as const;
 const FLUFF_WORD = { none: '', tufts: 'fluffy tufts', mane: 'a mane', frill: 'a neck frill', crest: 'a crest' } as const;
 const HORN_WORD = { none: '', unicorn: 'a unicorn horn', ram: 'curly horns', antlers: 'antlers' } as const;
+const TEETH_WORD = { none: '', buck: 'buck teeth', fangs: 'little fangs', toothy: 'a toothy grin' } as const;
+const TONGUE_WORD = { tucked: '', blep: 'a tongue poking out', forked: 'a forked tongue' } as const;
 const MOUTH_WORD = { plain: '', beak: 'a beak', jaws: 'big jaws', tusks: 'tusks' } as const;
 const FINISH_WORD = { matte: '', gradient: 'two-tone skin', eyespots: 'eye-spots', iridescent: 'shimmering skin', jelly: 'jelly skin' } as const;
 const TEXTURE_WORD = { smooth: '', velvet: 'velvety skin', scales: 'scales', pebbles: 'pebbly skin' } as const;
@@ -82,7 +86,9 @@ export function traitsOf(p: BodyPlan): Record<TraitCategory, string> {
     eyes: (p.eyeCount === 1 ? 'a single eye' : `${p.eyeCount} eyes`) + (p.eyeStalks > 0 ? ' on stalks' : ''),
     ears: p.earType === 'none' ? 'no ears' : p.earType === 'round' ? 'round ears' : p.earType === 'long' ? 'long ears' : p.earType,
     horns: HORN_WORD[p.horns],
-    mouth: p.mouth === 'plain' && p.snout > 0.75 ? 'a trunk' : MOUTH_WORD[p.mouth],
+    mouth: hasTrunk(p) ? 'a trunk' : hasFishLips(p) ? 'fish lips' : MOUTH_WORD[p.mouth],
+    teeth: TEETH_WORD[shownTeeth(p)],
+    tongue: TONGUE_WORD[shownTongue(p)],
     head: p.headShape === 'flat' ? 'a frog face' : p.headShape === 'long' ? 'a long face' : '',
     pattern: p.pattern === 'plain' ? 'plain skin' : p.pattern,
     finish: FINISH_WORD[p.finish],
@@ -101,7 +107,7 @@ export function traitsOf(p: BodyPlan): Record<TraitCategory, string> {
 
 /** Genes that are reported as discrete traits rather than "beyond both parents". */
 const DISCRETE = new Set<GeneId>([
-  'hue', 'legPairs', 'eyeCount', 'earType', 'pattern', 'wings', 'glow', 'tailTuft', 'shell', 'twinTail', 'legStyle', 'mouth', 'horns', 'arms', 'hands',
+  'hue', 'legPairs', 'eyeCount', 'earType', 'pattern', 'wings', 'glow', 'tailTuft', 'shell', 'twinTail', 'legStyle', 'mouth', 'teeth', 'tongue', 'horns', 'arms', 'hands',
   'tailShape', 'fluff', 'finish', 'gait', 'voice', 'quirk', 'favourite', 'twinHead', 'texture',
 ]);
 

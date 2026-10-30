@@ -3,9 +3,9 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { cells2, cells3, noise3 } from '../core/noise';
 import { clamp, clamp01, lerp, mulberry32, smoothstep, type Rng } from '../core/rng';
 import type { ArmLayout, LegLayout, Skeleton, SproutLayout, V3 } from '../genetics/anatomy';
-import type { BodyPlan, Hands, Hsl, LegStyle } from '../genetics/phenotype';
+import { hasFishLips, hasTrunk, shownTeeth, shownTongue, type BodyPlan, type Hands, type Hsl, type LegStyle } from '../genetics/phenotype';
 import { creatureMaterials, grainFor, skinMaterial, type CreatureMaterials } from './materials';
-import { SKIN_REGIONS, buildSkin, type SkinBlob, type SkinRegion } from './skin';
+import { SKIN_REGIONS, buildSkin, skinField, type SkinBlob, type SkinRegion } from './skin';
 
 /**
  * Turns a skeleton into three.js meshes. No assets: every part is generated
@@ -598,18 +598,197 @@ function buildHead(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vect
   }
 }
 
-/** A smiling mouth line across the lower front of an ellipsoid (in head space). */
-function smile(ctx: Ctx, head: THREE.Object3D, c: THREE.Vector3, r: THREE.Vector3, width: number, drop: number) {
-  const pts: THREE.Vector3[] = [];
-  for (let i = 0; i <= 8; i++) {
-    const s = (i / 8) * 2 - 1;
-    const yaw = s * width;
-    const pitch = -drop + 0.16 * s * s;
-    const d = new THREE.Vector3(Math.cos(pitch) * Math.cos(yaw), Math.sin(pitch), Math.cos(pitch) * Math.sin(yaw));
-    pts.push(new THREE.Vector3(c.x + d.x * r.x * 1.01, c.y + d.y * r.y * 1.01, c.z + d.z * r.z * 1.01));
+// ---- Mouths ----------------------------------------------------------------------
+
+/** The skin so far, seen from one head: lets mouth parts sit on the face the blobs will make. */
+interface FaceSkin {
+  /** Where the ray from `inside` out through `p` leaves the skin (head space), lifted `lift` off it. */
+  onto(inside: THREE.Vector3, p: THREE.Vector3, lift?: number): THREE.Vector3;
+  /** Outward normal of the skin at `p` (head space). */
+  normal(p: THREE.Vector3): THREE.Vector3;
+}
+
+function faceSkin(ctx: Ctx, head: THREE.Object3D): FaceSkin {
+  const field = skinField(ctx.blobs);
+  head.updateWorldMatrix(true, false);
+  const toCreature = head.matrixWorld.clone();
+  const w = new THREE.Vector3();
+  const f = (p: THREE.Vector3) => {
+    w.copy(p).applyMatrix4(toCreature);
+    return field(w.x, w.y, w.z);
+  };
+  const e = ctx.skel.head.radius * 0.03;
+  const d = new THREE.Vector3();
+  const normal = (p: THREE.Vector3) => {
+    const g = new THREE.Vector3();
+    for (let a = 0; a < 3; a++) {
+      d.copy(p).setComponent(a, p.getComponent(a) + e);
+      const hi = f(d);
+      d.setComponent(a, p.getComponent(a) - e);
+      g.setComponent(a, hi - f(d));
+    }
+    return g.lengthSq() > 1e-16 ? g.normalize() : p.clone().normalize();
+  };
+  const onto = (inside: THREE.Vector3, p: THREE.Vector3, lift = 0) => {
+    const dir = p.clone().sub(inside);
+    const len = dir.length();
+    dir.divideScalar(len);
+    const along = (t: number) => inside.clone().addScaledVector(dir, t);
+    // March in from well outside to the first point inside, then bisect. Searching only a
+    // little way out keeps a mouth tucked under a sunk head on the face, not on the chest.
+    const far = len * 1.7;
+    const STEPS = 24;
+    let out = far;
+    let into = -1;
+    for (let i = 1; i <= STEPS; i++) {
+      const t = far * (1 - i / STEPS);
+      if (f(along(t)) < 0) {
+        into = t;
+        break;
+      }
+      out = t;
+    }
+    if (into < 0 || out === far && f(along(far)) < 0) return p.clone();
+    for (let i = 0; i < 12; i++) {
+      const mid = (into + out) / 2;
+      if (f(along(mid)) < 0) into = mid;
+      else out = mid;
+    }
+    const hit = along(out);
+    return lift ? hit.addScaledVector(normal(hit), lift) : hit;
+  };
+  return { onto, normal };
+}
+
+const LIP = new THREE.Color(0xd77a86);
+const TONGUE = new THREE.Color(0xec8090);
+
+/** A frame on the face at `p`: z out of the skin along `n`, y up the face, x across it. */
+function faceFrame(p: THREE.Vector3, n: THREE.Vector3): THREE.Group {
+  const up = new THREE.Vector3(0, 1, 0).addScaledVector(n, -n.y);
+  if (up.lengthSq() < 1e-6) up.set(-1, 0, 0);
+  up.normalize();
+  const side = up.clone().cross(n);
+  const g = new THREE.Group();
+  g.position.copy(p);
+  g.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(side, up, n));
+  return g;
+}
+
+/**
+ * A mouth line on the skin, across the face (no snout) or around a snout's tip: `pts` run
+ * corner to corner through the middle, already on the skin. Draws the line, fuller lips,
+ * teeth and tongue. `size` is the mouth's scale in metres (head or snout radius).
+ */
+function mouthLine(ctx: Ctx, head: THREE.Object3D, face: FaceSkin, pts: THREE.Vector3[], size: number) {
+  const { plan, pal, mesh } = ctx;
+  const lips = clamp01((plan.lips - 0.2) / 0.6);
+  const thick = size * lerp(0.04, 0.062, lips);
+  const n = pts.length;
+  const mid = pts[Math.floor(n / 2)];
+  const centre = faceFrame(mid, face.normal(mid));
+  head.add(centre);
+  const pink = TONGUE.clone().lerp(pal.accent, 0.12);
+  if (hasFishLips(plan)) {
+    // A fish's pout: a puckered ring of lip around a small, dark mouth, in place of the line.
+    const R = size * 0.17;
+    const ring = new THREE.TorusGeometry(R, R * 0.55, 10, 20);
+    ring.scale(1, 0.72, 1.1);
+    const pout = mesh(paint(ring, pal, { solid: pal.body.clone().lerp(LIP, 0.65).multiplyScalar(0.92), sheen: 0 }), ctx.skin, false);
+    pout.position.set(0, -R * 0.3, R * 0.35);
+    const hole = mesh(paint(ellipsoid(R * 0.7, 1, 0.6, 0.35, 12), pal, { solid: MOUTH, sheen: 0 }), ctx.skin, false);
+    hole.position.set(0, -R * 0.3, R * 0.4);
+    centre.add(pout, hole);
+    if (shownTongue(plan) !== 'tucked') {
+      const tip = mesh(paint(ellipsoid(R * 0.45, 1, 0.8, 0.5, 10), pal, { solid: pink, sheen: 0 }), ctx.skin, false);
+      tip.position.set(0, -R * 0.6, R * 0.7);
+      centre.add(tip);
+    }
+    return;
   }
-  const thick = Math.min(r.x, r.y) * 0.045;
-  head.add(ctx.mesh(paint(splineTube(pts, [thick * 0.6, thick, thick, thick * 0.6], 16, 6), ctx.pal, { solid: MOUTH, sheen: 0 }), ctx.skin, false));
+  const taper = (r: number) => [r * 0.55, r, r, r, r * 0.55];
+  head.add(mesh(paint(splineTube(pts, taper(thick), n * 3, 6), pal, { solid: MOUTH, sheen: 0 }), ctx.skin, false));
+  const down = new THREE.Vector3(0, -1, 0).applyQuaternion(centre.quaternion);
+
+  // Fuller lips: a soft lower lip in a rosy skin colour, pouting out from the line.
+  const lipColour = pal.body.clone().lerp(LIP, 0.45 + 0.2 * lips).multiplyScalar(0.92);
+  if (lips > 0.35) {
+    const r = size * lerp(0.03, 0.065, (lips - 0.35) / 0.65);
+    const lower = pts.slice(1, n - 1).map((p) => p.clone().addScaledVector(down, thick + r * 0.8).addScaledVector(face.normal(p), r * 0.25));
+    head.add(mesh(paint(splineTube(lower, taper(r), n * 3, 8), pal, { solid: lipColour, sheen: 0 }), ctx.skin, false));
+  }
+
+  const ivory = (geo: THREE.BufferGeometry) => mesh(paint(geo, pal, { solid: IVORY, sheen: 0 }), ctx.skin, false);
+  const at = (i: number) => {
+    const g = faceFrame(pts[i], face.normal(pts[i]));
+    head.add(g);
+    return g;
+  };
+  switch (shownTeeth(plan)) {
+    case 'buck':
+      for (const side of [1, -1]) {
+        const tooth = ivory(ellipsoid(size * 0.085, 0.8, 1.3, 0.4, 10));
+        tooth.position.set(side * size * 0.075, -thick - size * 0.07, thick * 0.4);
+        centre.add(tooth);
+      }
+      break;
+    case 'fangs':
+      for (const i of [Math.round(n * 0.3), n - 1 - Math.round(n * 0.3)]) {
+        const fang = new THREE.ConeGeometry(size * 0.045, size * 0.16, 8);
+        fang.rotateX(Math.PI);
+        const m = ivory(fang);
+        m.position.set(0, -thick - size * 0.06, thick * 0.3);
+        at(i).add(m);
+      }
+      break;
+    case 'toothy':
+      for (let i = 1; i < n - 1; i++) {
+        const tooth = new THREE.ConeGeometry(size * 0.04, size * 0.09, 6);
+        tooth.rotateX(Math.PI);
+        const m = ivory(tooth);
+        m.position.set(0, -thick - size * 0.03, thick * 0.3);
+        at(i).add(m);
+      }
+      break;
+  }
+
+  const tongue = shownTongue(plan);
+  if (tongue === 'blep') {
+    // Just the tip, poking out of the middle of the mouth (beside buck teeth).
+    const tip = mesh(paint(ellipsoid(size * 0.12, 1, 1.2, 0.45, 12), pal, { solid: pink, sheen: 0 }), ctx.skin, false);
+    tip.position.set(shownTeeth(plan) === 'buck' ? size * 0.17 : 0, -thick - size * 0.1, thick + size * 0.035);
+    tip.rotation.x = 0.3;
+    centre.add(tip);
+  } else if (tongue === 'forked') {
+    // A thin tongue out and down from the middle, splitting in two at the end.
+    const L = size * 0.42;
+    const r = size * 0.036;
+    const stem = [new THREE.Vector3(0, 0, -r), new THREE.Vector3(0, -L * 0.12, L * 0.45), new THREE.Vector3(0, -L * 0.3, L * 0.85)];
+    const geos = [splineTube(stem, [r, r, r * 0.9], 10, 6)];
+    for (const side of [1, -1]) {
+      geos.push(splineTube([stem[2], new THREE.Vector3(side * L * 0.12, -L * 0.38, L * 1.08), new THREE.Vector3(side * L * 0.2, -L * 0.42, L * 1.22)], [r * 0.9, r * 0.6, r * 0.3], 8, 5));
+    }
+    const m = mesh(paint(mergeGeometries(geos), pal, { solid: pink.clone().multiplyScalar(0.85), sheen: 0 }), ctx.skin, false);
+    m.position.y = -thick * 0.5;
+    centre.add(m);
+  }
+}
+
+/** A mouth across a face with no snout, curving up at the corners. A sunk head carries it higher. */
+function faceMouth(ctx: Ctx, head: THREE.Object3D, face: FaceSkin, hr: number) {
+  const { plan } = ctx;
+  const hs = headScale(plan);
+  const drop = lerp(0.48, 0.3, plan.headSink) + 0.08 * hs.long;
+  const inside = new THREE.Vector3(0, -hr * 0.1, 0);
+  // Frogs grin from ear to ear; long faces have a neater mouth.
+  const width = 0.5 + 0.32 * hs.flat - 0.1 * hs.long + 0.08 * Math.max(0, plan.muzzle);
+  const pts: THREE.Vector3[] = [];
+  const N = 9;
+  for (let i = 0; i < N; i++) {
+    const s = (i / (N - 1)) * 2 - 1;
+    pts.push(face.onto(inside, onHead(plan, hr, s * width, -drop + 0.15 * s * s * (1 + hs.flat), 1), hr * 0.012));
+  }
+  mouthLine(ctx, head, face, pts, hr);
 }
 
 function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vector3) {
@@ -620,21 +799,23 @@ function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vec
   const headId = boneIds(head);
 
   if (plan.mouth === 'beak') {
+    // Pointed muzzles grow a sharp beak; blunt ones a broad, flat duck's bill.
     const bl = hr * (0.55 + sl * 1.2);
+    const bill = smoothstep(0.2, 0.6, plan.muzzle);
     const colour = new THREE.Color(0xf2b84b).lerp(pal.accent, 0.25);
-    const upper = new THREE.ConeGeometry(hr * 0.36, bl, 14);
+    const upper = new THREE.CylinderGeometry(hr * 0.36 * bill * 0.5, hr * 0.36, bl, 14);
     upper.rotateZ(-Math.PI / 2);
-    upper.scale(1, 0.72, 1);
+    upper.scale(1, lerp(0.72, 0.36, bill), lerp(1, 1.55, bill));
     upper.translate(front * 0.82 + bl / 2, -hr * 0.1 * hs.sy, 0);
-    const lower = new THREE.ConeGeometry(hr * 0.25, bl * 0.62, 12);
+    const lower = new THREE.CylinderGeometry(hr * 0.25 * bill * 0.5, hr * 0.25, bl * lerp(0.62, 0.9, bill), 12);
     lower.rotateZ(-Math.PI / 2);
-    lower.scale(1, 0.55, 0.9);
-    lower.translate(front * 0.8 + bl * 0.31, -hr * 0.32 * hs.sy, 0);
+    lower.scale(1, lerp(0.55, 0.3, bill), lerp(0.9, 1.9, bill));
+    lower.translate(front * 0.8 + bl * lerp(0.31, 0.45, bill), -hr * lerp(0.32, 0.24, bill) * hs.sy, 0);
     head.add(mesh(paint(upper, pal, { solid: colour, sheen: 0 }), skin), mesh(paint(lower, pal, { solid: colour.clone().multiplyScalar(0.85), sheen: 0 }), skin));
     return;
   }
 
-  if (plan.mouth === 'plain' && sl > 0.75) {
+  if (hasTrunk(plan)) {
     // A trunk: forward, then drooping toward the ground (but never into it).
     const T = hr * (1.1 + (sl - 0.75) * 4);
     const room = (ctx.skel.head.center.y - hr * 0.2 * hs.sy - 0.08) / 0.95;
@@ -648,7 +829,15 @@ function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vec
     pivot.add(tip);
     head.add(pivot);
     ctx.trunks.push(pivot);
-    smile(ctx, head, new THREE.Vector3(), new THREE.Vector3(hr * hs.sx, hr * hs.sy, hr * hs.sz), 0.5, 0.55);
+    // A little mouth tucked under the trunk.
+    const face = faceSkin(ctx, head);
+    const inside = new THREE.Vector3(0, -hr * 0.1, 0);
+    const pts2: THREE.Vector3[] = [];
+    for (let i = 0; i < 7; i++) {
+      const s = (i / 6) * 2 - 1;
+      pts2.push(face.onto(inside, onHead(plan, hr, s * 0.32, -0.62 + 0.12 * s * s, 1), hr * 0.012));
+    }
+    mouthLine(ctx, head, face, pts2, hr * 0.8);
     return;
   }
 
@@ -656,7 +845,7 @@ function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vec
   // hook down, or swell into a blunt, upturned nose. It melts into the face.
   if (sl <= 0.05) {
     if (plan.mouth === 'jaws') buildJaw(ctx, head, hr, front * 0.42, -hr * 0.55 * hs.sy, hr * 0.42, 1);
-    else smile(ctx, head, new THREE.Vector3(), new THREE.Vector3(hr * hs.sx, hr * hs.sy, hr * hs.sz), 0.55, 0.5);
+    faceMouth(ctx, head, faceSkin(ctx, head), hr);
     if (plan.mouth === 'tusks') buildTusks(ctx, head, hr, front * 0.6, -hr * 0.42 * hs.sy);
     return;
   }
@@ -680,24 +869,25 @@ function buildMouth(ctx: Ctx, head: THREE.Object3D, hr: number, world: THREE.Vec
   const tip = line(1).addScaledVector(tangent(1), rTip * 0.88);
   buildNose(ctx, head, hr, tip, tangent(1), rTip);
 
-  // The mouth line runs back along both sides of the snout from its tip, curling up at the corners.
-  const onSnout = (t: number, side: number, drop: number) => {
-    const c = line(t);
-    const tg = tangent(t);
-    const down = new THREE.Vector3(-tg.y, tg.x, 0).multiplyScalar(-1);
-    return c.addScaledVector(down, radius(t) * drop * 1.02).add(new THREE.Vector3(0, 0, side * radius(t) * Math.sqrt(1 - drop * drop) * 1.02));
-  };
-  const corner = plan.mouth === 'jaws' ? 0.08 : lerp(0.25, 0.12, blunt);
-  const mouthPts = [onSnout(corner, 1, 0.1), onSnout(0.5, 1, 0.45), onSnout(0.86, 1, 0.62), line(1).addScaledVector(tangent(1), rTip * 0.62).add(new THREE.Vector3(0, -rTip * 0.62, 0)),
-    onSnout(0.86, -1, 0.62), onSnout(0.5, -1, 0.45), onSnout(corner, -1, 0.1)];
-  const thick = r0 * 0.07;
-  head.add(ctx.mesh(paint(splineTube(mouthPts, [thick * 0.5, thick, thick, thick, thick, thick, thick * 0.5], 24, 6), pal, { solid: MOUTH, sheen: 0 }), skin, false));
-
   if (plan.mouth === 'jaws') {
     // A lower jaw under the snout, with fangs at the front: an underbite.
     const jawEnd = line(0.85);
     buildJaw(ctx, head, hr, (p0.x + jawEnd.x) / 2, (p0.y + jawEnd.y) / 2 - radius(0.4) * 0.6, (jawEnd.x - p0.x) / 2 + radius(0.85) * 0.5, radius(0.5) / (hr * 0.42));
   }
+  // The mouth line runs back along both sides of the snout from its tip, curling up at the
+  // corners. Each point is cast out from the snout's core onto the skin.
+  const face = faceSkin(ctx, head);
+  const lift = r0 * 0.02;
+  const onSnout = (t: number, side: number, drop: number) => {
+    const c = line(t);
+    const tg = tangent(t);
+    const down = new THREE.Vector3(-tg.y, tg.x, 0).multiplyScalar(-1);
+    return face.onto(c, c.clone().addScaledVector(down, radius(t) * drop).add(new THREE.Vector3(0, 0, side * radius(t) * Math.sqrt(1 - drop * drop))), lift);
+  };
+  const corner = plan.mouth === 'jaws' ? 0.08 : lerp(0.25, 0.12, blunt);
+  const front2 = face.onto(line(1), line(1).addScaledVector(tangent(1), rTip * 0.62).add(new THREE.Vector3(0, -rTip * 0.62, 0)), lift);
+  const mouthPts = [onSnout(corner, 1, 0.1), onSnout(0.5, 1, 0.45), onSnout(0.86, 1, 0.62), front2, onSnout(0.86, -1, 0.62), onSnout(0.5, -1, 0.45), onSnout(corner, -1, 0.1)];
+  mouthLine(ctx, head, face, mouthPts, lerp(r0, rTip, 0.5) * 1.3);
   if (plan.mouth === 'tusks') buildTusks(ctx, head, hr, line(0.55).x, line(0.55).y - radius(0.55) * 0.5);
 }
 

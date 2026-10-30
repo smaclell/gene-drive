@@ -5,7 +5,8 @@ import { buildCreature } from '../src/creature/build';
 import { buildSkin } from '../src/creature/skin';
 import { buildSkeleton } from '../src/genetics/anatomy';
 import { express, genomeSeed, randomGenome } from '../src/genetics/genome';
-import { planFromExpressed, planFromGenome } from '../src/genetics/phenotype';
+import { hasFishLips, planFromExpressed, planFromGenome, shownTeeth, shownTongue } from '../src/genetics/phenotype';
+import { traitsOf } from '../src/genetics/report';
 
 /** The metaball skin and the rig built on it. Slower than the genetics tests: these build real meshes. */
 describe('skin', () => {
@@ -54,4 +55,44 @@ describe('skin', () => {
       rig.dispose();
     }
   }, 30000);
+});
+
+describe('mouths', () => {
+  const plan = (genes: Record<string, number>) => {
+    const genome = randomGenome(mulberry32(5));
+    for (const [k, v] of Object.entries(genes)) (genome as unknown as Record<string, [number, number]>)[k] = [v, v];
+    return planFromGenome(genome);
+  };
+
+  it('shows teeth, tongues and fish lips only where there are lips', () => {
+    const toothy = plan({ mouth: 0.2, snout: 0.4, teeth: 0.95, tongue: 0.95, lips: 0.4 });
+    expect(shownTeeth(toothy)).toBe('toothy');
+    expect(shownTongue(toothy)).toBe('forked');
+    expect(traitsOf(toothy).teeth).toBe('a toothy grin');
+    const beaked = plan({ mouth: 0.6, teeth: 0.95, tongue: 0.95, lips: 0.95 });
+    expect(shownTeeth(beaked)).toBe('none');
+    expect(shownTongue(beaked)).toBe('tucked');
+    expect(hasFishLips(beaked)).toBe(false);
+    const pouty = plan({ mouth: 0.2, snout: 0.4, lips: 0.95, teeth: 0.95 });
+    expect(hasFishLips(pouty)).toBe(true);
+    expect(shownTeeth(pouty)).toBe('none');
+  });
+
+  it('puts a mouth on the skin of a big round head', () => {
+    const p = plan({ mouth: 0.2, snout: 0, headSize: 0.95, teeth: 0.9, tongue: 0.7, lips: 0.6 });
+    const skel = buildSkeleton(p);
+    const rig = buildCreature(p, skel, 5);
+    rig.root.updateMatrixWorld(true);
+    // Mouth parts hang off the head, below its centre and out in front of it.
+    const head = rig.head.getWorldPosition(new THREE.Vector3());
+    const r = skel.head.radius;
+    let parts = 0;
+    rig.head.traverse((o) => {
+      if (!(o instanceof THREE.Mesh) || o === rig.head) return;
+      const at = new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3()).sub(head);
+      if (at.y < -r * 0.15 && at.x > r * 0.5 && Math.abs(at.z) < r * 0.9) parts++;
+    });
+    expect(parts).toBeGreaterThan(4);
+    rig.dispose();
+  });
 });

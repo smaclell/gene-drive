@@ -21,6 +21,7 @@ import { VISITOR_THEMES, themeBias } from './sim/visitors';
  *   set=horns:0.95,mouth:0.9          force genes on every creature (both alleles)
  *   sprouts=2                         give every creature this many random sprouts
  *   walk=1                            walk in place to check gaits (W toggles)
+ *   face=1                            a close-up of every face, three-quarter view (F toggles)
  */
 
 const params = new URLSearchParams(location.search);
@@ -30,6 +31,7 @@ const theme = VISITOR_THEMES.find((t) => t.id === params.get('theme'));
 const forced = (params.get('set') ?? '').split(',').map((kv) => kv.split(':')).filter(([k, v]) => GENE_IDS.includes(k as GeneId) && v !== undefined);
 const sproutCount = params.has('sprouts') ? Number(params.get('sprouts')) : null;
 let walking = params.get('walk') === '1';
+let faces = params.get('face') === '1';
 let shown: { rig: CreatureRig; plan: BodyPlan; skel: Skeleton; phase: number }[] = [];
 
 function tweak(genome: Genome, rng: () => number): Genome {
@@ -107,6 +109,7 @@ addEventListener('keydown', (e) => {
     populate();
   }
   if (e.key === 'w' || e.key === 'W') walking = !walking;
+  if (e.key === 'f' || e.key === 'F') faces = !faces;
 });
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -131,7 +134,40 @@ renderer.setAnimationLoop(() => {
       time, phase: c.phase, moving: 1, swimming: false, flying: false, pose: restPose(), lookYaw: 0, happy: false, digging: false, foraging: false, blink: false, action: null,
     });
   }
-  controls.update();
-  renderer.render(scene, camera);
-  labels.render(scene, camera);
+  if (faces) renderFaces();
+  else {
+    controls.update();
+    renderer.setViewport(0, 0, innerWidth, innerHeight);
+    renderer.render(scene, camera);
+  }
+  labels.domElement.style.display = faces ? 'none' : '';
+  if (!faces) labels.render(scene, camera);
 });
+
+/** One cell per creature, each looking at its face from a little to one side. */
+const faceCamera = new THREE.PerspectiveCamera(32, 1, 0.02, 60);
+function renderFaces() {
+  const cols = Math.ceil(Math.sqrt((shown.length * innerWidth) / innerHeight));
+  const rows = Math.ceil(shown.length / cols);
+  const w = innerWidth / cols;
+  const h = innerHeight / rows;
+  renderer.setScissorTest(true);
+  shown.forEach((c, i) => {
+    const x = (i % cols) * w;
+    const y = innerHeight - (Math.floor(i / cols) + 1) * h;
+    renderer.setViewport(x, y, w, h);
+    renderer.setScissor(x, y, w, h);
+    const head = c.rig.head.getWorldPosition(new THREE.Vector3());
+    const forward = new THREE.Vector3(1, 0, 0).applyQuaternion(c.rig.root.quaternion);
+    const view = forward.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.55).setY(0.12).normalize();
+    const distance = c.skel.head.radius * 7 + 0.3;
+    // Clip anything nearer than the face, such as a neighbour in the grid.
+    faceCamera.near = Math.max(0.02, distance - c.skel.head.radius * 4);
+    faceCamera.aspect = w / h;
+    faceCamera.updateProjectionMatrix();
+    faceCamera.position.copy(head).addScaledVector(view, distance);
+    faceCamera.lookAt(head);
+    renderer.render(scene, faceCamera);
+  });
+  renderer.setScissorTest(false);
+}

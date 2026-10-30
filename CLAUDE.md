@@ -33,7 +33,7 @@ on pull requests.
 ## Data flow
 
 ```
-Genome ─ 56 fixed genes (allele pairs) + sprouts (variable-length list)
+Genome ─ 59 fixed genes (allele pairs) + sprouts (variable-length list)
   │ express()                       genetics/genome.ts
   ▼
 BodyPlan ─ shape units, discrete styles, gait, voice, quirk   genetics/phenotype.ts
@@ -113,6 +113,10 @@ src/
   `founder` that is mostly low), read it in `phenotype.ts`, then use it in `anatomy.ts` / `build.ts` /
   `abilities.ts`. Add a word to `traitsOf()` in `report.ts` if it is a discrete trait (and to `DISCRETE` there).
   Old saves keep working because `reviveGenome` fills missing genes. Add a test.
+- **Mouths:** `buildMouth` in `build.ts` picks beak, trunk, snout or bare face; `mouthLine` draws the line,
+  lips, pout, teeth and tongue on points that `faceSkin` has cast onto the skin (from `skinField`, the blobs'
+  field before meshing), so cheeks and sunk heads never bury the mouth. Which teeth and tongue show is
+  `shownTeeth`/`shownTongue` in `phenotype.ts` (beaks and trunks hide them).
 - **Add a body part:** write a `buildX(ctx, …)` function in `build.ts` beside the others and call it from
   `buildCreature`. Decide whether it is **skin** or a **rigblock**:
   - Skin: create bones with `addBone()` (rest rotation 0 unless it is a base yaw), then add blobs with
@@ -171,7 +175,9 @@ src/
   `set=posture:0.97,legPairs:0.55,arms:0.8` centaurs; `set=waist:0.97,taper:0.1,legPairs:0.8` insects;
   `set=neckLength:0.02` sunk heads; `set=belly:1` pot bellies; `set=texture:0.7` scales; `theme=hive`, `theme=bog`)
   forces genes on all of them; `sprouts=3` adds random sprouts; `walk=1` (or W) walks them in place
-  to check gaits. R rerolls.
+  to check gaits; `face=1` (or F) shows a close-up of every face (handy: `set=snout:0,headSize:0.9` big round
+  heads; `set=teeth:0.95,tongue:0.95`; `set=lips:0.95` fish lips; `set=mouth:0.6,muzzle:0.95` duck bills).
+  Keep `count` to about 6 for headless face shots. R rerolls.
 - Headless screenshots work with the preinstalled Playwright Chromium using
   `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`, against
   `npx vite` or `npx vite preview`. Take several frames a few hundred ms apart to judge a gait.

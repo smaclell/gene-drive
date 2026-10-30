@@ -1,5 +1,5 @@
 import { canFly, type Abilities } from './abilities';
-import { isCentaur, isUpright, type BodyPlan, type Gait } from './phenotype';
+import { hasFishLips, hasTrunk, isCentaur, isUpright, shownTeeth, shownTongue, type BodyPlan, type Gait } from './phenotype';
 
 /**
  * Journal entries: notable forms the player can discover by breeding or
@@ -49,7 +49,7 @@ export const DISCOVERIES: Discovery[] = [
   // Head
   { id: 'two-headed', title: 'Two heads', hint: 'Recessive, and very rare. Curio visitors sometimes carry it.', section: 'Head', test: (p) => p.twinHead },
   { id: 'eye-stalks', title: 'Eye stalks', hint: 'Eyes on stalks, like a snail.', section: 'Head', test: (p) => p.eyeStalks > 0 },
-  { id: 'trunk', title: 'Trunk', hint: 'A snout so long it droops.', section: 'Head', test: (p) => p.snout > 0.75 && p.mouth === 'plain' },
+  { id: 'trunk', title: 'Trunk', hint: 'A snout so long it droops.', section: 'Head', test: (p) => hasTrunk(p) },
   { id: 'big-head', title: 'Big head', hint: 'All head, hardly any body.', section: 'Head', test: (p) => p.headSize > 0.8 && p.girth < 0.45 },
   { id: 'cyclops', title: 'Cyclops', hint: 'One big eye.', section: 'Head', test: (p) => p.eyeCount === 1 },
   { id: 'many-eyes', title: 'Four eyes', hint: 'Extra eyes are dominant. Keep looking.', section: 'Head', test: (p) => p.eyeCount === 4 },
@@ -59,6 +59,9 @@ export const DISCOVERIES: Discovery[] = [
   { id: 'antlers', title: 'Antlers', hint: 'The grandest horns. Grove visitors wear them.', section: 'Head', test: (p) => p.horns === 'antlers' },
   { id: 'beaked', title: 'Beak', hint: 'A fancier mouth.', section: 'Head', test: (p) => p.mouth === 'beak' },
   { id: 'tusked', title: 'Tusks', hint: 'The fanciest mouth. Great for digging.', section: 'Head', test: (p) => p.mouth === 'tusks' },
+  { id: 'fish-lips', title: 'Fish lips', hint: 'Lips so full they pucker. Only on a plain mouth.', section: 'Head', test: (p) => hasFishLips(p) },
+  { id: 'toothy', title: 'Toothy grin', hint: 'A whole row of teeth. Teeth are dominant.', section: 'Head', test: (p) => shownTeeth(p) === 'toothy' },
+  { id: 'forked-tongue', title: 'Forked tongue', hint: 'A tongue that tastes the air, like a lizard.', section: 'Head', test: (p) => shownTongue(p) === 'forked' },
   { id: 'frog-face', title: 'Frog face', hint: 'A wide, flat head with eyes on top.', section: 'Head', test: (p) => p.headShape === 'flat' },
   { id: 'neckless', title: 'All one piece', hint: 'No neck at all: the face sits right on the body. Bog visitors look like this.', section: 'Head', test: (p) => p.headSink > 0.5 },
   // Tails & extras

@@ -15,6 +15,10 @@ export type EarType = 'none' | 'round' | 'long' | 'frills' | 'antennae';
 export type Pattern = 'plain' | 'spots' | 'stripes' | 'patches';
 export type HeadShape = 'flat' | 'round' | 'long';
 export type Mouth = 'plain' | 'beak' | 'jaws' | 'tusks';
+/** Teeth that show outside a closed mouth: two rabbit teeth, two little fangs, or a whole row. */
+export type Teeth = 'none' | 'buck' | 'fangs' | 'toothy';
+/** A tongue tip that pokes out (a "blep"), or a thin forked one like a lizard's. */
+export type Tongue = 'tucked' | 'blep' | 'forked';
 export type Horns = 'none' | 'unicorn' | 'ram' | 'antlers';
 export type Fluff = 'none' | 'tufts' | 'mane' | 'frill' | 'crest';
 export type TailShape = 'plain' | 'whip' | 'curl' | 'club' | 'fan';
@@ -87,6 +91,10 @@ export interface BodyPlan {
   /** -1 a pointed snout that hooks down (shrew, anteater) … +1 a blunt, bulbous one that turns up (pig, hippo). */
   muzzle: number;
   mouth: Mouth;
+  /** 0 a thin mouth line … 1 full lips; from `FISH_LIPS` up they pucker into a fish's pout. */
+  lips: number;
+  teeth: Teeth;
+  tongue: Tongue;
   eyeCount: number;
   /** Eye radius as a fraction of head radius. */
   eyeSize: number;
@@ -283,6 +291,9 @@ export function planFromExpressed(e: Expressed, sprouts: SproutGene[] = []): Bod
     snout: through(0, 0.33, 1.1, e.snout),
     muzzle: lerp(-1, 1, e.muzzle),
     mouth: bucket(e.mouth, [0.5, 0.66, 0.82], ['plain', 'beak', 'jaws', 'tusks'] as const),
+    lips: e.lips,
+    teeth: bucket(e.teeth, [0.55, 0.7, 0.84], ['none', 'buck', 'fangs', 'toothy'] as const),
+    tongue: bucket(e.tongue, [0.58, 0.8], ['tucked', 'blep', 'forked'] as const),
     eyeCount: eyeCountFrom(e.eyeCount),
     eyeSize: through(0.08, 0.27, 0.55, e.eyeSize),
     eyeStalks: e.eyeStalks < 0.6 ? 0 : lerp(0.5, 2.2, (e.eyeStalks - 0.6) / 0.4),
@@ -320,6 +331,17 @@ export const planFromGenome = (genome: Genome) => planFromExpressed(express(geno
 export const isUpright = (p: BodyPlan) => p.legPairs === 1 && p.tilt > 0.9;
 
 /** A body on two or more leg pairs with its chest reared up, like a centaur. */
+/** Lips at or above this pucker into a fish's pout. */
+export const FISH_LIPS = 0.8;
+
+export const hasTrunk = (p: BodyPlan) => p.snout > 0.75 && p.mouth === 'plain';
+/** Beaks and trunks have no lips, so no teeth or tongue show either. */
+const lipped = (p: BodyPlan) => p.mouth !== 'beak' && !hasTrunk(p);
+export const hasFishLips = (p: BodyPlan) => p.mouth === 'plain' && lipped(p) && p.lips >= FISH_LIPS;
+/** The teeth and tongue a face actually shows (a pout hides the teeth). */
+export const shownTeeth = (p: BodyPlan): Teeth => (lipped(p) && !hasFishLips(p) ? p.teeth : 'none');
+export const shownTongue = (p: BodyPlan): Tongue => (lipped(p) ? p.tongue : 'tucked');
+
 export const isCentaur = (p: BodyPlan) => p.legPairs >= 2 && p.rise > 0.6;
 
 // ---- Words -------------------------------------------------------------
@@ -372,13 +394,17 @@ export function describePlan(p: BodyPlan): string {
   if (p.waist > 0.35) bits.push('wasp-waisted');
   if (p.belly > 0.6) bits.push('pot-bellied');
   if (p.lumps > 0.35) bits.push('lumpy');
-  if (p.snout > 0.75 && p.mouth === 'plain') bits.push('trunked');
+  if (hasTrunk(p)) bits.push('trunked');
   if (p.spikes > 1.1) bits.push('sail-backed');
   if (p.horns === 'unicorn') bits.push('one-horned');
   if (p.horns === 'ram') bits.push('curly-horned');
   if (p.horns === 'antlers') bits.push('antlered');
   if (p.mouth === 'beak') bits.push('beaked');
   if (p.mouth === 'tusks') bits.push('tusked');
+  if (hasFishLips(p)) bits.push('pouty');
+  const teeth = shownTeeth(p);
+  if (teeth !== 'none') bits.push(teeth === 'buck' ? 'buck-toothed' : teeth === 'fangs' ? 'fanged' : 'toothy');
+  if (shownTongue(p) === 'forked') bits.push('fork-tongued');
   if (p.fluff === 'mane') bits.push('maned');
   if (p.fluff === 'frill') bits.push('frilled');
   if (p.fluff === 'crest') bits.push('crested');

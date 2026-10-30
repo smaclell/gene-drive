@@ -119,6 +119,14 @@ Everything is procedural WebAudio: no samples, no new dependencies, quiet by def
 - [x] Cloud shadows drift over the meadow by day; the pond has depth colour, a foam line and glinting ripples
 - [x] Soft-edged shadows
 
+**Mouths**
+- [x] Mouths sit on the real skin (cast onto the blobs' field), so big round and sunk heads finally have one
+- [x] Lips gene: thin line → fuller rosy lower lip → a fish's pout
+- [x] Teeth gene: buck teeth, little fangs, a toothy grin; tongue gene: a blep or a lizard's forked tongue
+- [x] Blunt muzzles turn beaks into duck bills
+- [x] Journal: Fish lips, Toothy grin, Forked tongue; gallery `face=1` close-ups
+- [ ] Mouths that open: when calling, eating and yawning, with the tongue flicking out on forked tongues
+
 ## 🎯 Next (pending a choice)
 
 1. **Sprouts that do things:** sprouts that grab fruit, eye-sprouts that spot visitors early, leaf sprouts that photosynthesise.

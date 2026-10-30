@@ -185,6 +185,24 @@ function smin(a: number, b: number, k: number): number {
 }
 
 /**
+ * The skin's distance field read straight off the blobs, before meshing (negative inside).
+ * Lets rigblocks such as the mouth sit on the surface the blobs are going to make.
+ */
+export function skinField(blobs: SkinBlob[]): (x: number, y: number, z: number) => number {
+  const compiled = blobs.map((b) => compile(b, SKIN_REGIONS.indexOf(b.region), b.blend));
+  return (x, y, z) => {
+    let f = FAR;
+    for (const c of compiled) {
+      if (x < c.min[0] || y < c.min[1] || z < c.min[2] || x > c.max[0] || y > c.max[1] || z > c.max[2]) continue;
+      const d = probe(c, x, y, z, false);
+      const k = c.blob.blend;
+      f = f >= FAR ? d : k > 1e-6 ? smin(f, d, k) : Math.min(f, d);
+    }
+    return f;
+  };
+}
+
+/**
  * Mesh a set of blobs. `cell` is the grid spacing in metres: smaller is smoother and slower.
  * Blobs thinner than about a cell are thickened so they never vanish.
  */
