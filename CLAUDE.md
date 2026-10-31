@@ -13,6 +13,9 @@ names, and read their header comments first.
 ## Workflow
 
 - **No pull requests for now.** Commit and push straight to `main` (the owner asked for this).
+  If the session is set up on its own branch, push that branch, then merge it into `main` and push
+  `main` too (fast-forward when you can). Do this even though pushing `main` deploys to GitHub Pages:
+  the owner wants that. Work isn't finished until it is on `main`.
 - Before pushing: `npm test` and `npm run build` (which typechecks).
 - For anything visual, check it in the gallery or the game (see "Debugging").
 
